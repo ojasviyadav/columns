@@ -19,14 +19,21 @@ R.endFind();                  check('find: off', st().find === 'off', st());
 R.go('top', true); await wait(300);
 R.go('end', false);
 check('motion: gliding', st().motion === 'gliding', st());
-const bar = document.getElementById('bar'), y = innerHeight * .3;
-bar.dispatchEvent(new MouseEvent('mousedown', { clientY: y, bubbles: true }));
+const bar = document.getElementById('bar'), th = document.getElementById('thumb').getBoundingClientRect(), y = th.top + th.height / 2;
+bar.dispatchEvent(new MouseEvent('mousedown', { clientY: y, bubbles: true }));  // the thumb, grabbed in its middle
 check('motion: dragging takes over from the glide', st().motion === 'dragging', st());
 const held = tr(); await wait(350);
 check('motion: the glide stopped when the drag began', tr() === held && st().motion === 'dragging', [held, tr(), st().motion]);
 dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
 check('motion: scrolling after the drag', st().motion === 'scrolling', st());
 check('motion: still again', await until(() => st().motion === 'still', 1000), st());
+
+// the scroll bar's track, clicked below the thumb, goes one page down (the Mac's default)
+R.go('top', true); await wait(250);
+const t0y = tr(), tb = document.getElementById('thumb').getBoundingClientRect();
+bar.dispatchEvent(new MouseEvent('mousedown', { clientY: Math.min(innerHeight - 4, tb.bottom + 40), bubbles: true }));
+dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); await wait(300);
+check('scroll bar: a click on the track goes a page', tr() !== t0y && st().motion !== 'dragging', [t0y, tr()]);
 
 // layout: a section folds
 const id = R.state().sections ? document.querySelector('.md .sec .sec').dataset.id : '';

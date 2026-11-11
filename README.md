@@ -4,7 +4,7 @@
 
 ![Columns showing a long Markdown chapter in four columns across a 2560-wide screen](docs/columns-dark.png)
 
-Columns opens a Markdown file and lays it out across your screen in side-by-side columns of text, so a long
+Columns opens a Markdown (or plain text) file and lays it out across your screen in side-by-side columns of text, so a long
 document fills a wide monitor instead of one narrow strip down the middle. The text runs from the bottom of one
 column to the top of the next, like a newspaper, and all the columns scroll together. A dotted ribbon joins the end
 of each column to the top of the next, so your eye knows where to go.
@@ -17,11 +17,12 @@ editing it in another app), Columns shows the new text at once and marks what ch
 - 1 to 6 columns (⌘1 … ⌘6); the default follows the width of your screen. A short document stands in the middle.
 - Sections collapse at their headings; Go to Section lists the outline and marks where you are.
 - Find (⌘F), with every match marked in every column. Back and Forward (⌘[ ⌘]) after a jump.
-- Opens where you left off: the files you had open, at the line you were reading.
+- Opens where you left off: each file at the line you were reading, and the files you had open, as your Mac keeps windows on quit (or with ⌥⌘Q).
 - Links to other Markdown files open them in Columns, at the heading they name.
 - Themes: System, Light, Sepia, Dark. Fonts: System and Libron. Text size from 8 to 48 points.
 - Bold word starts: the first letters of each word in bold, if that helps you read.
 - Export as PDF and Print: one clean copy in pages, every section open.
+- Behaves like a Mac app: Zoom, full screen, Open Recent, the Mac's scroll bar settings, and it stays open when you close its last window.
 - Columns itself sends nothing anywhere. (Pictures that a document links from the web load from there.)
 
 ![Five columns in the light theme, with the settings open](docs/columns-light-settings.png)
@@ -74,7 +75,9 @@ In the app (`main.swift`), `Reader.showing` is the one value for what a window s
 `lastVersion(why)`, `empty` or `problem(why)`. It is set only in `reload`; the banner and the menus follow it.
 
 `checks/check-states.sh` walks the page through these states, and through keeping the reading place, in a check copy of
-the app (`CHECK_COPY=1 ./build.sh`), and fails on a wrong one. `COLUMNS_DISPLAY="<display name>"` runs it on another display.
+the app (`CHECK_COPY=1 ./build.sh`), and fails on a wrong one. `checks/check-window.sh` checks the window behaviour Mac
+apps share (Zoom, new windows, the last window closing, the keys). `COLUMNS_DISPLAY="<display name>"` runs either on
+another display.
 
 ## Licences
 

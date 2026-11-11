@@ -1,0 +1,48 @@
+#!/bin/zsh
+# Checks the window behaviour Mac apps share, in the check copy (build it first: CHECK_COPY=1 ./build.sh):
+# Zoom goes to a larger frame and back, a new window opens stepped from the front one without moving it, Columns stays
+# open when its last window closes, and the page keeps the system's keys. COLUMNS_DISPLAY: see launch-check.sh.
+cd "${0:A:h}/.."
+id=org.learningharness.columns.check; P="first process whose bundle identifier is \"$id\""; fail=0
+T=$(mktemp -d); cp checks/fixtures/long.md checks/fixtures/short.md $T/
+ok() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1 — $3"; fail=1; fi; }
+se() { osascript -e "tell application \"System Events\" to tell ($P) to $1" 2>&1; }
+frame() { se "get {position, size} of window 1" | tr -d ' '; }
+run() {  # run <script text>: runs it in the front page and prints what it returns
+  rm -f $T/eval.js.out; print -r -- "$1" > $T/eval.tmp; mv $T/eval.tmp $T/eval.js
+  for i in {1..40}; do sleep 0.5; [[ -f $T/eval.js.out ]] && break; done; cat $T/eval.js.out 2>/dev/null
+}
+COLUMNS_EVAL=$T/eval.js checks/launch-check.sh $T/long.md; sleep 4
+se "set size of window 1 to {900, 600}" >/dev/null; sleep 1
+small=$(frame)
+# Zoom as a title bar double-click does it (performZoom), without bringing Columns to the front.
+run 'webkit.messageHandlers.zoom.postMessage(1); return "";' >/dev/null; sleep 1.2
+zoomed=$(frame)
+run 'webkit.messageHandlers.zoom.postMessage(1); return "";' >/dev/null; sleep 1.2
+back=$(frame)
+ok "Zoom: a larger frame" '[[ $zoomed != $small ]]' "$small -> $zoomed"
+ok "Zoom again: back to the frame before" '[[ $back == $small ]]' "$small -> $zoomed -> $back"
+# Narrow window: fewer columns shown than asked for, each one readable.
+se "set size of window 1 to {720, 600}" >/dev/null; sleep 1.5
+shown=$(run 'R.setColumns(6, true); await new Promise(r => setTimeout(r, 300)); const s = R.state(); return s.columns + " " + s.shown;')
+ok "narrow window: fewer columns shown" '[[ $shown == "6 2" ]]' "asked, shown: $shown"
+run 'R.setColumns(3, true); return "";' >/dev/null
+# Keys: Shift-arrows are left to the system; Option-arrow goes a page.
+keys=$(run 'R.go("top", true); const y = () => document.querySelector(".md").style.transform; const a = y();
+dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true })); const b = y();
+dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })); const c = y(); return [a === b, b !== c].join(" ");')
+ok "keys: Shift-arrow left to the system, Option-arrow pages" '[[ $keys == "true true" ]]' "$keys"
+# A new window steps down and right of the front one, which stays where it is.
+se "set position of window 1 to {$(echo $small | cut -d, -f1), $(echo $small | cut -d, -f2)}" >/dev/null; sleep 0.5
+before=$(frame)
+open -g -a "$PWD/build/Columns Check.app" $T/short.md; sleep 3
+count=$(se "count windows"); first=$(se "get {position, size} of window \"long.md\"" | tr -d ' '); second=$(se "get {position, size} of window \"short.md\"" | tr -d ' ')
+ok "a new window leaves the front one where it is" '[[ $first == $before ]]' "$before -> $first"
+ok "a new window opens stepped from it" '[[ $second != $first && $count == 2 ]]' "$first / $second ($count windows)"
+# Closing every window keeps Columns running.
+se "click menu item \"Close\" of menu \"File\" of menu bar 1" >/dev/null; sleep 0.8
+se "click menu item \"Close\" of menu \"File\" of menu bar 1" >/dev/null; sleep 1.5
+running=$(pgrep -f "Columns Check.app/Contents/MacOS" | wc -l | tr -d ' ')
+ok "the last window closed: Columns keeps running" '[[ $running -ge 1 ]]' "processes: $running"
+osascript -e "tell application id \"$id\" to quit" 2>/dev/null
+exit $fail

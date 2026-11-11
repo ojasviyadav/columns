@@ -40,6 +40,10 @@ enum Prefs {
         get { d.url(forKey: "lastFile") }
         set { d.set(newValue, forKey: "lastFile") }
     }
+    static var launchedBefore: Bool {  // the Welcome page opens by itself once, at the first launch
+        get { d.bool(forKey: "launchedBefore") || d.object(forKey: "lastFile") != nil }
+        set { d.set(newValue, forKey: "launchedBefore") }
+    }
     static var openFiles: [URL] {  // the files open when Columns last quit, the front one last
         get { (d.stringArray(forKey: "openFiles") ?? []).map { URL(fileURLWithPath: $0) } }
         set { d.set(newValue.map(\.path), forKey: "openFiles") }
@@ -98,7 +102,8 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 
     static func show(_ url: URL) { _ = reader(showing: url) }
     static func reader(showing url: URL) -> Reader {
-        if let r = all.first(where: { $0.url == url }) { r.window.makeKeyAndOrderFront(nil); return r }
+        let same = { (a: URL) in a.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL }
+        if let r = all.first(where: { same($0.url) }) { r.window.makeKeyAndOrderFront(nil); return r }
         let r = Reader(url: url)
         all.append(r)
         r.window.makeKeyAndOrderFront(nil)
@@ -110,7 +115,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 
     private init(url: URL) {
         self.url = url
-        window = NSWindow(contentRect: NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1400, height: 900),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init()
         window.isReleasedWhenClosed = false
@@ -125,10 +130,18 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         window.titlebarAppearsTransparent = true  // the title bar takes the page's colour, so sepia is sepia to the top
         window.contentView = web
         window.delegate = self
-        // The first window owns the saved frame; each further one opens at the same size, stepped down and right.
-        if !window.setFrameAutosaveName("Reader"), let front = Reader.current?.window {
-            window.setFrame(front.frame, display: false)
-            window.cascadeTopLeft(from: front.cascadeTopLeft(from: .zero))
+        // The first window owns the saved frame; each further one opens at the same size, stepped down and right of the
+        // front one (which stays where it is). A first window ever fills most of the screen, centred, so that Zoom (a
+        // double-click on the title bar, the green button with ⌥) has a larger frame to go to and a smaller one to return to.
+        let saved = UserDefaults.standard.object(forKey: "NSWindow Frame Reader") != nil
+        if window.setFrameAutosaveName("Reader") {
+            if !saved, let area = NSScreen.main?.visibleFrame {
+                let size = NSSize(width: (area.width * 0.85).rounded(), height: (area.height * 0.88).rounded())
+                window.setFrame(NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height), display: false)
+            }
+        } else if let front = Reader.current?.window {
+            let next = front.frame.offsetBy(dx: 24, dy: -24)
+            window.setFrame(window.constrainFrameRect(next, to: front.screen), display: false)
         }
         #if CHECK_COPY  // the check copy only (CHECK_COPY=1 ./build.sh): open at COLUMNS_FRAME, e.g. on a display for checks
         if let frame = ProcessInfo.processInfo.environment["COLUMNS_FRAME"] { window.setFrame(NSRectFromString(frame), display: false) }
@@ -149,6 +162,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         web.configuration.userContentController.add(self, name: "link")
         #if CHECK_COPY
         web.configuration.userContentController.add(self, name: "log")
+        web.configuration.userContentController.add(self, name: "zoom")  // checks/check-window.sh: what a title bar double-click does
         web.configuration.userContentController.addUserScript(WKUserScript(source: "addEventListener('error', e => webkit.messageHandlers.log.postMessage(e.message + ' @' + e.lineno)); addEventListener('unhandledrejection', e => webkit.messageHandlers.log.postMessage('rejection: ' + e.reason));", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         #endif
         loadShell()
@@ -164,10 +178,16 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         applyTheme()
         call("setFamily", s.family.rawValue)
         call("setDots", s.bigDots)
+        updateScroller()
         call("setBoldStarts", s.boldStarts)
         call("setColumns", s.columns)
         call("setFont", s.fontSize)
         reload(keep: false)
+    }
+
+    // The page's position bar follows the Mac's scroll bar settings (System Settings > Appearance).
+    func updateScroller() {
+        call("setScroller", NSScroller.preferredScrollerStyle == .overlay, UserDefaults.standard.bool(forKey: "AppleScrollerPagingBehavior"))
     }
 
     func applyTheme() {
@@ -176,7 +196,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         window.backgroundColor = theme.page
         web.underPageBackgroundColor = theme.page
         // The popover is open while the theme changes, so it follows at once instead of keeping the old look.
-        settings.appearance = theme.appearance ?? NSApp.effectiveAppearance
+        settings.appearance = theme.appearance  // nil: it follows the system, also when the system changes
         settings.contentViewController?.view.appearance = theme.appearance
         call("setTheme", theme.rawValue)
     }
@@ -523,6 +543,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
             if findBar.isOpen, let f = now["find"] as? [String: Any] { findBar.show(total: f["count"] as? Int ?? 0, index: f["index"] as? Int ?? 0) }
         }
         #if CHECK_COPY
+        if message.name == "zoom" { window.performZoom(nil) }
         if message.name == "log", let line = message.body as? String, let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
             let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
             try? (old + line + "\n").write(toFile: log, atomically: true, encoding: .utf8)
@@ -594,6 +615,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         web.configuration.userContentController.removeScriptMessageHandler(forName: "link")
         #if CHECK_COPY
         web.configuration.userContentController.removeScriptMessageHandler(forName: "log")
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "zoom")
         #endif
         Reader.all.removeAll { $0 === self }
     }
@@ -757,23 +779,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(forName: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Reader.all.forEach { $0.updateScroller() } }
+        }
         DispatchQueue.main.async {
-            guard Reader.all.isEmpty else { return }
+            guard Reader.all.isEmpty else { return }  // opened with files (from Finder, the Dock): only those
+            // The files that were open when Columns quit, if the Mac keeps windows on quit (System Settings > Desktop &
+            // Dock, "Close windows when quitting an application" off, or ⌥⌘Q). A first launch shows what the app does;
+            // with nothing to reopen, the Open panel, as in TextEdit and Preview.
             let open = Prefs.openFiles.filter { FileManager.default.fileExists(atPath: $0.path) }
-            if !open.isEmpty { open.forEach(Reader.show) }  // every file that was open at quit
-            else if let last = Prefs.lastFile, FileManager.default.fileExists(atPath: last.path) { Reader.show(last) }
-            else if let welcome = Reader.welcome { Reader.show(welcome) }  // a first launch shows what the app does
+            if !open.isEmpty { open.forEach(Reader.show) }
+            else if !Prefs.launchedBefore, let welcome = Reader.welcome { Reader.show(welcome) }
             else { self.openDocument(nil) }
+            Prefs.launchedBefore = true
         }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) { urls.forEach(Reader.show) }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    // A click on the Dock icon with every window minimized brings one back (what AppKit does when this is true).
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { true }
+    // Like other Mac document apps, Columns stays open when its last window closes.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    // A click on the Dock icon brings back a minimized window, or with no window at all shows the Open panel.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if Reader.all.isEmpty { openDocument(nil); return false }
+        return true
+    }
+    // Whether this quit keeps the windows for the next launch: the Mac's setting, the other way round with ⌥⌘Q.
+    static var keepsWindows: Bool { UserDefaults.standard.bool(forKey: "NSQuitAlwaysKeepsWindows") }
+    private var invertKeep = false
+    @objc func quitInverted(_ sender: Any?) { invertKeep = true; NSApp.terminate(sender) }
     func applicationWillTerminate(_ notification: Notification) {
-        let front = Reader.current
-        Prefs.openFiles = (Reader.all.filter { $0 !== front } + [front].compactMap { $0 }).map(\.url).filter { $0 != Reader.welcome }
+        let front = Reader.current, keep = AppDelegate.keepsWindows != invertKeep
+        Prefs.openFiles = keep ? (Reader.all.filter { $0 !== front } + [front].compactMap { $0 }).map(\.url).filter { $0 != Reader.welcome } : []
     }
 
     @objc func openDocument(_ sender: Any?) {
@@ -870,6 +906,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return i
         }
         func arrow(_ key: Int) -> String { String(Character(UnicodeScalar(key)!)) }
+        // Hold ⌥ in the Columns menu: Quit and Keep Windows, or Quit and Close All Windows, the other way round from the Mac's setting.
+        let quitOther = item(AppDelegate.keepsWindows ? "Quit and Close All Windows" : "Quit and Keep Windows", #selector(quitInverted(_:)), "q", [.command, .option])
+        quitOther.isAlternate = true
         func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
             let m = NSMenu(title: title)
             items.forEach(m.addItem)
@@ -915,7 +954,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                           item("Hide Columns", #selector(NSApplication.hide(_:)), "h"),
                           item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
                           item("Show All", #selector(NSApplication.unhideAllApplications(_:))), .separator(),
-                          item("Quit Columns", #selector(NSApplication.terminate(_:)), "q")]),
+                          item("Quit Columns", #selector(NSApplication.terminate(_:)), "q"), quitOther]),
          menu("File", [item("Open…", #selector(openDocument(_:)), "o"), recent, .separator(),
                        item("Close", #selector(NSWindow.performClose(_:)), "w"), .separator(),
                        item("Reload", #selector(reloadFile(_:)), "r"),

@@ -70,6 +70,11 @@
   /* The bar answers the pointer: stronger under it, strongest while it is dragged. */
   #bar:hover #thumb { opacity: .55; }
   #ribbons[data-motion="dragging"] ~ #bar #thumb { opacity: .8; }
+  /* With the Mac's scroll bars shown only when scrolling, the thumb shows while the text moves or under the pointer. */
+  :root[data-scroller="overlay"] #thumb { opacity: 0; transition: opacity .3s ease .8s; }
+  :root[data-scroller="overlay"] #ribbons:not([data-motion="still"]) ~ #bar #thumb { opacity: .35; transition-delay: 0s; }
+  :root[data-scroller="overlay"] #bar:hover #thumb { opacity: .55; transition-delay: 0s; }
+  :root[data-scroller="overlay"] #ribbons[data-motion="dragging"] ~ #bar #thumb { opacity: .8; transition-delay: 0s; }
   /* A live reload changed text that no column shows: a mark on the position bar at its place, for a moment. */
   #bar .tick { position: absolute; left: 1px; right: 1px; height: 4px; margin-top: -2px; border-radius: 2px; background: var(--link);
                pointer-events: none; animation: tick 2.4s ease-out forwards; }
@@ -154,7 +159,7 @@ const R = (() => {
   // s = document offset at the top of window 1; window k starts at s + k * step.
   // step = window height minus two lines: each seam dissolves one line in each window,
   // so every line is fully clear in one of the two windows.
-  let N = 3, s = 0, html = '', plain = '', boldStarts = false, arts = [], clips = [], lanes = [], H = 0, L = 24, O = 48, T = 0, step = 1, raf = 0, still = 0;
+  let want = 3, N = 3, s = 0, html = '', plain = '', boldStarts = false, arts = [], clips = [], lanes = [], H = 0, L = 24, O = 48, T = 0, step = 1, raf = 0, still = 0;
 
   // The page's state machines. Each has one named state, changed only through `go`, written as data-<machine> on the
   // element it styles, and read by name through R.state() (checks and the app read it there). README.md lists them.
@@ -172,6 +177,7 @@ const R = (() => {
     if (!m.states.includes(to)) throw new Error(`${machine} has no state "${to}"`);
     if (state[machine] === to) return;
     state[machine] = to; m.on.dataset[machine] = to;
+    if (machine === 'page') root.inert = to !== 'document';  // the text behind a message takes no keys, clicks or VoiceOver
   }
   for (const m in MACHINES) go(m, MACHINES[m].states[0]);
 
@@ -418,7 +424,10 @@ const R = (() => {
     const hid = kept && again(kept.el, j);
     lifted = hid ? { p: { ...kept, el: hid }, s } : null;
   }
-  const refit = () => hold();
+  // The columns asked for (`want`) are shown as long as each keeps a readable width; a narrower window shows fewer.
+  const MIN_COLUMN = 340;
+  const fit = n => Math.max(1, Math.min(n, Math.floor((innerWidth - 10) / MIN_COLUMN)));
+  const refit = () => arts.length && fit(want) !== N ? hold(() => { N = fit(want); build(); applyFolds(); }) : hold();
   const ro = new ResizeObserver(() => { if (!folding) refit(); });
   function build() {
     root.replaceChildren(); arts = []; clips = [];
@@ -561,6 +570,9 @@ const R = (() => {
     kick();
   }
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => requestAnimationFrame(() => {
+    ink = getComputedStyle(document.documentElement).getPropertyValue('--link').trim() || ink; kick();
+  }));
   // The focal moment when a file opens: each ribbon threads in, from the bottom of window k, up its gutter, into window k+1.
   function threadIn() {
     if (reduced.matches) return;
@@ -796,10 +808,11 @@ const R = (() => {
   }, { passive: false });
   addEventListener('keydown', e => {
     if (state.page !== 'document' || e.target.closest?.('button')) return;  // Space and Enter press a focused fold button
-    const page = N * step, end = e.metaKey;
-    const d = { ArrowDown: end ? Infinity : 3 * L, ArrowUp: end ? -Infinity : -3 * L, PageDown: page, PageUp: -page,
+    if (e.ctrlKey || (e.shiftKey && e.key !== ' ')) return;  // Shift-arrows and Control keys stay the system's
+    const page = N * step, end = e.metaKey, far = e.altKey;  // ⌘: the ends; ⌥: a page, as in Safari
+    const d = { ArrowDown: end ? Infinity : far ? page : 3 * L, ArrowUp: end ? -Infinity : far ? -page : -3 * L, PageDown: page, PageUp: -page,
                 ' ': e.shiftKey ? -page : page, Home: -Infinity, End: Infinity }[e.key];
-    if (d === undefined || (e.metaKey && !e.key.startsWith('Arrow'))) return;
+    if (d === undefined || ((e.metaKey || e.altKey) && !e.key.startsWith('Arrow'))) return;
     e.preventDefault(); glide(d === Infinity ? endS() : s + d, true);
   });
   addEventListener('resize', refit);
@@ -842,6 +855,8 @@ const R = (() => {
     const box = document.createElement('div');
     box.append(out.cloneContents());
     box.querySelectorAll('.fold, .sec.folded > .sec-body').forEach(x => x.remove());
+    box.querySelectorAll('[href]').forEach(x => x.setAttribute('href', x.href));  // relative links and pictures keep working where pasted
+    box.querySelectorAll('img[src]').forEach(x => x.setAttribute('src', x.src));
     box.querySelectorAll('b.ws').forEach(x => x.replaceWith(...x.childNodes));  // bold word starts change the screen, not the text
     box.querySelectorAll('[title]').forEach(x => x.removeAttribute('title'));
     box.querySelectorAll('.sec, .sec-body').forEach(x => x.replaceWith(...x.childNodes));  // the page's own wrappers stay here
@@ -1042,13 +1057,45 @@ const R = (() => {
     }
   }
   addEventListener('animationend', e => { if (e.animationName === 'lit') e.target.classList.remove('lit'); if (e.animationName === 'tick') e.target.remove(); });
-  function seek(e) { moving('dragging'); s = e.clientY / innerHeight * T - span() / 2; apply(); }
+  // The position bar acts like a Mac scroll bar: the thumb moves with the pointer from where it was grabbed; a click on
+  // the track goes a page toward it, or jumps there when the Mac is set to "Jump to the spot that's clicked".
+  let grab = 0, jumpToSpot = false;
+  function seek(e) { moving('dragging'); s = (e.clientY - grab) / innerHeight * T; apply(); }
   bar.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const top = s / T * innerHeight, onThumb = e.clientY >= top && e.clientY <= top + thumb.h;
     mark();
+    if (!onThumb && !jumpToSpot) return glide(s + (e.clientY < top ? -1 : 1) * N * step, true);
+    grab = onThumb ? e.clientY - top : thumb.h / 2;
     seek(e);
     const up = () => { removeEventListener('mousemove', seek); removeEventListener('mouseup', up); moving(); };
     addEventListener('mousemove', seek); addEventListener('mouseup', up);
   });
+  // Selecting past the top or bottom of the window scrolls the text, and the selection goes on with it.
+  let selecting = null;
+  addEventListener('mousedown', e => {
+    if (e.button !== 0 || e.target.closest?.('#bar, .fold, a, button') || !root.contains(e.target)) return;
+    selecting = { x: e.clientX, y: e.clientY, raf: 0 };
+  });
+  addEventListener('mousemove', e => {
+    if (!selecting) return;
+    if (!(e.buttons & 1)) { selecting = null; return; }
+    selecting.x = e.clientX; selecting.y = e.clientY;
+    const edge = 8, over = e.clientY < edge ? e.clientY - edge : e.clientY > innerHeight - edge ? e.clientY - innerHeight + edge : 0;
+    if (!over || selecting.raf) return;
+    const step = () => {
+      if (!selecting) return;
+      const y = selecting.y, by = y < edge ? y - edge : y > innerHeight - edge ? y - innerHeight + edge : 0;
+      if (!by) { selecting.raf = 0; return; }
+      scrollBy(Math.max(-40, Math.min(40, by * .6 + Math.sign(by) * 4)));
+      const sel = getSelection(), at = document.caretRangeFromPoint(selecting.x, Math.min(innerHeight - 2, Math.max(2, y)));
+      if (at && sel.rangeCount) sel.extend(at.startContainer, at.startOffset);
+      selecting.raf = requestAnimationFrame(step);
+    };
+    selecting.raf = requestAnimationFrame(step);
+  });
+  addEventListener('mouseup', () => { if (selecting) cancelAnimationFrame(selecting.raf); selecting = null; });
 
   const doc = () => state.page === 'document';  // the commands for a document do nothing while a message stands in for it
   return {
@@ -1110,7 +1157,7 @@ const R = (() => {
     },
     // Every state of the page by name: the five machines, how the place is held, and what the sections are doing.
     state() {
-      return { ...state, place: placeKind(), columns: N, boldStarts, matches: hits.length, match: at + 1,
+      return { ...state, place: placeKind(), columns: want, shown: N, boldStarts, matches: hits.length, match: at + 1,
                sections: arts[0]?.querySelectorAll('.sec').length ?? 0, folded: [...folded], peeked: [...peeked], waiting: [...waiting.keys()] };
     },
     find(q, dir, instant) { return doc() ? find(q, dir, instant) : { count: 0, index: 0 }; },
@@ -1140,9 +1187,11 @@ const R = (() => {
     toggleSection(id) { if (doc()) toggle(id, false); },
     setColumns(n, instant) {
       // The place is held when the change runs, not when it is asked for: a morph runs a moment later.
-      morph('columns', n, n => n === N && arts.length > 0, n => hold(() => { N = n; build(); applyFolds(); }), instant);
+      morph('columns', n, n => n === want && N === fit(n) && arts.length > 0, n => hold(() => { want = n; N = fit(n); build(); applyFolds(); }), instant);
     },
     setFont(px) { hold(() => document.documentElement.style.setProperty('--fs', px + 'px')); },
+    // How the Mac shows scroll bars (only when scrolling, or always) and what a click on the track does.
+    setScroller(overlay, jump) { if (overlay) document.documentElement.dataset.scroller = 'overlay'; else delete document.documentElement.dataset.scroller; jumpToSpot = jump; },
     setDots(big) { if (big) document.documentElement.dataset.dots = 'big'; else delete document.documentElement.dataset.dots; kick(); },
     setBoldStarts(on) {
       morph('boldStarts', on, on => on === boldStarts, on => {

@@ -8,8 +8,8 @@
 	<key>CFBundleExecutable</key><string>Columns</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>1.0</string>
-	<key>CFBundleVersion</key><string>1</string>
+	<key>CFBundleShortVersionString</key><string>1.0.1</string>
+	<key>CFBundleVersion</key><string>2</string>
 	<key>CFBundleGetInfoString</key><string>Columns: lightweight Markdown reader for ultrawide screens</string>
 	<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Ojasvi Yadav</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
@@ -24,6 +24,12 @@
 			<key>CFBundleTypeRole</key><string>Viewer</string>
 			<key>LSHandlerRank</key><string>Alternate</string>
 			<key>LSItemContentTypes</key><array><string>net.daringfireball.markdown</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key><string>Plain Text</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key><array><string>public.plain-text</string></array>
 		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
