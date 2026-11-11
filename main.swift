@@ -115,7 +115,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 
     private init(url: URL) {
         self.url = url
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+        window = ReaderWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init()
         window.isReleasedWhenClosed = false
@@ -163,6 +163,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         #if CHECK_COPY
         web.configuration.userContentController.add(self, name: "log")
         web.configuration.userContentController.add(self, name: "zoom")  // checks/check-window.sh: what a title bar double-click does
+        web.configuration.userContentController.add(self, name: "titleDoubleClick")
         web.configuration.userContentController.addUserScript(WKUserScript(source: "addEventListener('error', e => webkit.messageHandlers.log.postMessage(e.message + ' @' + e.lineno)); addEventListener('unhandledrejection', e => webkit.messageHandlers.log.postMessage('rejection: ' + e.reason));", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         #endif
         loadShell()
@@ -544,6 +545,13 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         }
         #if CHECK_COPY
         if message.name == "zoom" { window.performZoom(nil) }
+        if message.name == "titleDoubleClick" {  // checks/check-window.sh: a double-click in the middle of the title bar
+            let p = NSPoint(x: window.frame.width / 2, y: window.frame.height - 10)
+            for n in 1...2 { for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: n, pressure: 1) { window.sendEvent(e) }
+            } }
+        }
         if message.name == "log", let line = message.body as? String, let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
             let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
             try? (old + line + "\n").write(toFile: log, atomically: true, encoding: .utf8)
@@ -616,8 +624,34 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         #if CHECK_COPY
         web.configuration.userContentController.removeScriptMessageHandler(forName: "log")
         web.configuration.userContentController.removeScriptMessageHandler(forName: "zoom")
+        web.configuration.userContentController.removeScriptMessageHandler(forName: "titleDoubleClick")
         #endif
         Reader.all.removeAll { $0 === self }
+    }
+}
+
+// A reader's window. A double-click on its title bar does what the Mac is set to do (System Settings > Desktop & Dock,
+// "Double-click a window's title bar to"): Fill or Zoom (here both fill the screen and toggle back), Minimize, or nothing.
+// With the compact toolbar, AppKit's title view in the bar takes the double-click and does none of these (seen on
+// macOS 27, 11 Nov 2026; a plain window in the same app zooms), so the window answers it itself. A double-click on a
+// control in the bar (the window buttons, Settings) stays the control's.
+final class ReaderWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown, event.clickCount == 2, inTitleBar(event.locationInWindow) else { return super.sendEvent(event) }
+        let d = UserDefaults.standard
+        switch d.string(forKey: "AppleActionOnDoubleClick") {
+        case "None": break
+        case "Minimize": miniaturize(nil)
+        case "Maximize", "Fill": zoom(nil)
+        default: if d.bool(forKey: "AppleMiniaturizeOnDoubleClick") { miniaturize(nil) } else { zoom(nil) }
+        }
+    }
+    private func inTitleBar(_ p: NSPoint) -> Bool {
+        guard p.y >= contentLayoutRect.maxY, let frameView = contentView?.superview else { return false }
+        let bars = titlebarAccessoryViewControllers.map(\.view)  // the find bar and the file banner are not the title bar
+        var hit = frameView.hitTest(frameView.convert(p, from: nil))
+        while let v = hit { if v is NSControl || bars.contains(v) { return false }; hit = v.superview }
+        return true
     }
 }
 
