@@ -1,0 +1,1090 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<base href="">
+<script src="marked.js"></script>
+<style>
+  @font-face { font-family: Libron; src: url(Libron-Regular.ttf); }
+  @font-face { font-family: Libron; src: url(Libron-Italic.ttf); font-style: italic; }
+  @font-face { font-family: Libron; src: url(Libron-Bold.ttf); font-weight: bold; }
+  @font-face { font-family: Libron; src: url(Libron-BoldItalic.ttf); font-weight: bold; font-style: italic; }
+
+  /* Themes: no data-theme follows the system; an explicit one wins over the media query. */
+  :root { color-scheme: light dark; --fs: 16px; --ease-out: cubic-bezier(.16, 1, .3, 1); --family: -apple-system, system-ui, sans-serif;
+    --bg: #fbfbfa; --fg: #1d1d1f; --muted: #6e6e73; --rule: #dcdce0; --code: #f0f0f2; --link: #0a64d8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --fg: #e4e4e6; --muted: #98989d; --rule: #3a3a3c; --code: #2a2a2d; --link: #5aa9ff; } }
+  :root[data-theme="light"] { color-scheme: light;
+    --bg: #fbfbfa; --fg: #1d1d1f; --muted: #6e6e73; --rule: #dcdce0; --code: #f0f0f2; --link: #0a64d8; }
+  :root[data-theme="sepia"] { color-scheme: light;
+    --bg: #f4ecd8; --fg: #3b2f22; --muted: #73614a; --rule: #ddcfb1; --code: #eadfc4; --link: #8f4f12; }
+  :root[data-theme="dark"] { color-scheme: dark;
+    --bg: #1c1c1e; --fg: #e4e4e6; --muted: #98989d; --rule: #3a3a3c; --code: #2a2a2d; --link: #5aa9ff; }
+  :root[data-family="libron"] { --family: Libron, Georgia, serif; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: var(--bg); color: var(--fg);
+               transition: background-color .3s ease, color .3s ease; }
+  .md code, .md pre, .md th, .md a { transition: background-color .3s ease, color .3s ease; }
+  /* Changing the number of windows: each window (named col-k) glides to its new size and place, its text kept
+     at true size and clipped by the moving edges while it cross-fades to the reflowed text; windows that go
+     away fade where they stand, new ones fade in. A font change cross-fades the whole layout. */
+  ::view-transition-group(*) { animation-duration: .25s; animation-timing-function: var(--ease-out); }
+  ::view-transition-image-pair(*) { overflow: clip; }
+  ::view-transition-old(*), ::view-transition-new(*) { width: 100%; height: 100%; object-fit: none; object-position: 0 0;
+                                                       animation-duration: .2s; animation-timing-function: ease-out; }
+  /* Reduced motion: windows do not slide or resize; the cross-fade stays. */
+  @media (prefers-reduced-motion: reduce) { ::view-transition-group(*) { animation: none; } }
+  html { font-size: var(--fs); }
+  body { font: 1rem/1.55 var(--family); -webkit-font-smoothing: antialiased; }
+
+  ::selection { background: color-mix(in oklab, var(--link) 35%, transparent); }
+
+  /* N windows onto the same document, like split editors with locked scrolling: window k starts where
+     window k-1 ends, and one scroll position moves them all vertically together. No dividers: the windows
+     are one page, and their edges dissolve where the text continues instead of cutting it. */
+  #cols { position: fixed; inset: 0 10px 0 0; display: flex; z-index: 1; }
+  .col { flex: 1 1 0; min-width: 0; padding: 18px 0; }
+  /* A document that fits in one column stands in the middle, in a column of the same width (so its text does not
+     flow anew), without the empty columns and their ribbons. */
+  :root[data-fill="single"] #cols { justify-content: center; }
+  :root[data-fill="single"] .col { flex: 0 0 calc(100% / var(--n, 1)); }
+  :root[data-fill="single"] .col + .col, :root[data-fill="single"] :is(#ribbons, #dots) { display: none; }
+  /* Not inherited: a seam's fade changes while scrolling, and an inherited variable would restyle the whole
+     document copy inside the window on every change. */
+  @property --top { syntax: '<length>'; inherits: false; initial-value: 0px; }
+  @property --bottom { syntax: '<length>'; inherits: false; initial-value: 0px; }
+  .clip { height: 100%; overflow: clip;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--top), #000 calc(100% - var(--bottom)), transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0, #000 var(--top), #000 calc(100% - var(--bottom)), transparent 100%); }
+
+  /* Each hand-off is one ribbon: along the bottom of window k, up the gutter, along the top of window k+1.
+     Its dots move exactly with the text, so the gutter visibly carries text from one window into the other. */
+  #ribbons, #dots { position: fixed; top: 0; left: 0; pointer-events: none; }
+  #ribbons { right: 10px; bottom: 0; }
+  /* A lane is one shape (two bands joined by a narrow gutter channel), tinted as a group so its parts never
+     darken where they meet. The dots are drawn on a canvas (see drawDots). */
+  #ribbons .lane { fill: var(--link); opacity: .075; transition: opacity .6s ease-out, fill .3s ease; }
+  #ribbons:not([data-motion="still"]) .lane { opacity: .15; transition-duration: .12s; }
+  #bar { position: fixed; top: 0; right: 0; bottom: 0; width: 10px; }
+  #thumb { position: absolute; top: 0; left: 3px; right: 3px; border-radius: 3px; background: var(--muted); opacity: .35; transition: opacity .15s ease; }
+  /* The bar answers the pointer: stronger under it, strongest while it is dragged. */
+  #bar:hover #thumb { opacity: .55; }
+  #ribbons[data-motion="dragging"] ~ #bar #thumb { opacity: .8; }
+  /* A live reload changed text that no column shows: a mark on the position bar at its place, for a moment. */
+  #bar .tick { position: absolute; left: 1px; right: 1px; height: 4px; margin-top: -2px; border-radius: 2px; background: var(--link);
+               pointer-events: none; animation: tick 2.4s ease-out forwards; }
+  @keyframes tick { 0%, 60% { opacity: .9; } 100% { opacity: 0; } }
+
+  /* The text keeps a reading measure (about 75 characters) however wide a column is, centred in it. */
+  .md { display: flow-root; max-width: 42em; margin-inline: auto; padding: 0 46px 2em; will-change: transform; overflow-wrap: break-word; }
+  .md > :first-child, .md > .sec:first-child > :first-child { margin-top: 0; }
+
+  /* Sections: each heading owns everything up to the next heading of its level or higher. A chevron in the
+     margin folds it; it shows on hover, and stays while folded, with a quiet "…" after the heading. */
+  .md :is(h1, h2, h3, h4, h5, h6) { position: relative; }
+  .fold { position: absolute; left: -34px; top: 50%; translate: 0 -50%; width: 24px; height: 24px; padding: 0;
+          display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent;
+          color: var(--muted); opacity: 0; cursor: pointer; transition: opacity .15s ease, background-color .15s ease, scale .12s ease-out; }
+  .fold:active { scale: .92; }  /* the press is felt before the section moves */
+  .fold svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round;
+              stroke-linejoin: round; transition: rotate .22s var(--ease-out); }
+  #cols[data-pointer="moving"] .fold { opacity: .3; }  /* while the pointer moves over the page, every heading shows it can fold */
+  .md :is(h1, h2, h3, h4, h5, h6):hover > .fold, .fold:focus-visible, .fold[aria-expanded="false"] { opacity: .75; }
+  .fold:hover { opacity: 1; background: color-mix(in oklab, var(--fg) 9%, transparent); }
+  .fold:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+  .fold[aria-expanded="false"] svg { rotate: -90deg; }
+  .sec.folded > .sec-body { display: none; }
+  .sec.folded > :first-child::after { content: '…'; margin-left: .45em; padding: 0 .5em; border-radius: 999px;
+                                      font-size: .7em; vertical-align: .15em; color: var(--muted); background: var(--code); }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { line-height: 1.25; margin: 1.3em 0 .5em; }
+  .md h1 { font-size: 1.9em; } .md h2 { font-size: 1.5em; border-bottom: 1px solid var(--rule); padding-bottom: .2em; }
+  .md h3 { font-size: 1.25em; } .md h4 { font-size: 1.05em; } .md h5, .md h6 { font-size: 1em; color: var(--muted); }
+  .md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: .6em 0; }
+  .md ul, .md ol { padding-left: 1.6em; } .md li > ul, .md li > ol { margin: .2em 0; }
+  .md a[href] { color: var(--link); text-decoration: none; } .md a[href]:hover { text-decoration: underline; }
+  .md code { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: .1em .3em; border-radius: 4px; overflow-wrap: anywhere; }
+  /* Columns are narrow: code and tables wrap to the column instead of hiding their ends past its edge. */
+  .md pre { background: var(--code); padding: .7em .9em; border-radius: 6px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { padding: 0 1em; border-left: 3px solid var(--rule); color: var(--muted); }
+  /* A table keeps its shape: wider than the column, it scrolls sideways, and a shade at the cut edge shows there
+     is more (the shade covers the edge it scrolls away from, so it only appears where text is hidden). */
+  .md table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-variant-numeric: tabular-nums;
+    background: linear-gradient(to right, var(--bg) 40%, transparent) left / 28px 100% no-repeat local,
+                linear-gradient(to left, var(--bg) 40%, transparent) right / 28px 100% no-repeat local,
+                linear-gradient(to right, color-mix(in oklab, var(--fg) 22%, transparent), transparent) left / 14px 100% no-repeat scroll,
+                linear-gradient(to left, color-mix(in oklab, var(--fg) 22%, transparent), transparent) right / 14px 100% no-repeat scroll; }
+  .md th, .md td { border: 1px solid var(--rule); padding: .3em .6em; text-align: left; vertical-align: top; min-width: 4em; }
+  .md th { background: var(--code); }
+  .md img { max-width: 100%; }
+  .md li:has(> input[type=checkbox]) { list-style: none; margin-left: -1.35em; }  /* a task item shows its box, not a bullet too */
+  /* Drawn by the page: the system's disabled checkbox is too faint to read as done or not done. */
+  .md li > input[type=checkbox] { -webkit-appearance: none; appearance: none; width: .95em; height: .95em; margin: 0 .5em 0 0;
+    vertical-align: -.12em; border: 1.5px solid var(--muted); border-radius: .22em; background: transparent; }
+  /* Checked: a filled box whose tick is cut out, so the page colour shows through in every theme. */
+  .md li > input[type=checkbox]:checked { border: 0; background: var(--link);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cmask id='m'%3E%3Crect width='12' height='12' fill='white'/%3E%3Cpath d='M2.9 6.3l2.2 2.2 4.1-4.7' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/mask%3E%3Crect width='12' height='12' rx='2.6' mask='url(%23m)'/%3E%3C/svg%3E") center / 100% no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cmask id='m'%3E%3Crect width='12' height='12' fill='white'/%3E%3Cpath d='M2.9 6.3l2.2 2.2 4.1-4.7' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/mask%3E%3Crect width='12' height='12' rx='2.6' mask='url(%23m)'/%3E%3C/svg%3E") center / 100% no-repeat; }
+  /* What just changed (a live reload) or where a heading link landed: a tint behind the text that fades. */
+  .md .lit { position: relative; isolation: isolate; }
+  .md .lit::before { content: ''; position: absolute; inset: -2px -8px; z-index: -1; border-radius: 6px; pointer-events: none;
+                     background: color-mix(in oklab, var(--link) 14%, transparent); animation: lit 1.2s ease-out forwards; }
+  @keyframes lit { 0%, 25% { opacity: 1; } 100% { opacity: 0; } }
+  .md hr { border: 0; border-top: 1px solid var(--rule); margin: 1.5em 0; }
+  /* Find: every match tinted, the current one solid, in the yellow of find in every Mac app. */
+  ::highlight(find) { background-color: color-mix(in oklab, #ffd60a 40%, transparent); }
+  ::highlight(find-now) { background-color: #ffd60a; color: #1d1d1f; }
+  /* A file that cannot be shown: what happened, in the middle of the page, instead of an empty page. */
+  #note { position: fixed; inset: 0; z-index: 2; display: none; place-items: center; padding: 32px; background: var(--bg); text-align: center; }
+  :root[data-page="message"] #note { display: grid; }
+  #note div { max-width: 30em; }
+  #note h1 { font-size: 1.35em; line-height: 1.3; margin: 0 0 .4em; text-wrap: balance; }
+  #note p { margin: 0; color: var(--muted); text-wrap: pretty; }
+</style>
+</head>
+<body>
+<svg id="ribbons"></svg>
+<canvas id="dots"></canvas>
+<div id="cols"></div>
+<div id="bar"><div id="thumb"></div></div>
+<div id="note"><div><h1></h1><p></p></div></div>
+<script>
+const R = (() => {
+  const root = document.getElementById('cols'), bar = document.getElementById('bar'), thumb = document.getElementById('thumb');
+  const rib = document.getElementById('ribbons'), cv = document.getElementById('dots'), cx = cv.getContext('2d');
+  // s = document offset at the top of window 1; window k starts at s + k * step.
+  // step = window height minus two lines: each seam dissolves one line in each window,
+  // so every line is fully clear in one of the two windows.
+  let N = 3, s = 0, html = '', plain = '', boldStarts = false, arts = [], clips = [], lanes = [], H = 0, L = 24, O = 48, T = 0, step = 1, raf = 0, still = 0;
+
+  // The page's state machines. Each has one named state, changed only through `go`, written as data-<machine> on the
+  // element it styles, and read by name through R.state() (checks and the app read it there). README.md lists them.
+  const MACHINES = {
+    page:    { on: document.documentElement, states: ['empty', 'document', 'message'] },             // what the page shows
+    motion:  { on: rib, states: ['still', 'opening', 'scrolling', 'gliding', 'dragging'] },           // what moves the text
+    layout:  { on: root, states: ['settled', 'folding', 'morphing'] },                                // the text being laid out anew
+    find:    { on: document.documentElement, states: ['off', 'found', 'none'] },                      // the find in progress
+    pointer: { on: root, states: ['resting', 'moving'] },                                             // the pointer over the page
+    fill:    { on: document.documentElement, states: ['columns', 'single'] },                         // the text fills the columns, or fits in one
+  };
+  const state = {};
+  function go(machine, to) {
+    const m = MACHINES[machine];
+    if (!m.states.includes(to)) throw new Error(`${machine} has no state "${to}"`);
+    if (state[machine] === to) return;
+    state[machine] = to; m.on.dataset[machine] = to;
+  }
+  for (const m in MACHINES) go(m, MACHINES[m].states[0]);
+
+  function slug(text) { return text.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s/g, '-'); }
+  function toHtml(md) {
+    const t = document.createElement('template'), seen = new Set();
+    t.innerHTML = marked.parse(md, { gfm: true });
+    // A Markdown file may carry raw HTML. Keep its markup, never its code: no scripts, frames, styles or handlers.
+    t.content.querySelectorAll('script, style, iframe, frame, frameset, object, embed, applet, meta, link, base, form, animate, set').forEach(x => x.remove());
+    t.content.querySelectorAll('*').forEach(x => [...x.attributes].forEach(at => {
+      const n = at.name.toLowerCase(), v = at.value.replace(/[\s\u0000-\u001f]/g, '').toLowerCase();
+      if (n.startsWith('on') || n === 'srcdoc' || (/^(href|src|xlink:href|action|formaction|poster|data)$/.test(n) && /^(javascript|vbscript|data:text\/html)/.test(v))) x.removeAttribute(at.name);
+    }));
+    t.content.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(h => {
+      const base = slug(h.textContent) || 'section';  // a heading of symbols only still gets a name
+      let id = base;
+      for (let n = 1; seen.has(id); n++) id = base + '-' + n;  // the same heading again: -1, -2, … until the name is free
+      seen.add(id); h.id = id;
+    });
+    // A link shows where it leads when the pointer rests on it.
+    t.content.querySelectorAll('a[href]').forEach(a => { const to = a.getAttribute('href'); if (!to.startsWith('#') && !a.title) a.title = to; });
+    sectionize(t.content);
+    return t.innerHTML;
+  }
+  // Bold word starts: the first letters of every word in bold, so the eye has a fixed point in each word.
+  // Headings, code and text that is already bold stay as they are. Only the copy on screen changes.
+  // A word runs through an apostrophe (don’t), so no letter stands bold alone after it.
+  const WORD = /[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}][\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{M}]*(?:['’][\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}][\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}\p{M}]*)*/gu;
+  function embolden(h) {
+    const t = document.createElement('template');
+    t.innerHTML = h;
+    const walk = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT), nodes = [];
+    for (let n; (n = walk.nextNode());) if (!n.parentElement?.closest('pre, code, kbd, samp, h1, h2, h3, h4, h5, h6, th, b, strong, svg, button')) nodes.push(n);
+    for (const n of nodes) {
+      const d = n.data, f = document.createDocumentFragment();
+      let last = 0;
+      for (const m of d.matchAll(WORD)) {
+        const w = m[0], b = document.createElement('b');
+        let k = w.length <= 3 ? 1 : Math.ceil(w.length * .45);
+        while (k < w.length && /\p{M}/u.test(w[k])) k++;  // an accent stays with its letter
+        b.className = 'ws'; b.textContent = w.slice(0, k);
+        f.append(d.slice(last, m.index), b, w.slice(k));
+        last = m.index + w.length;
+      }
+      if (last) { f.append(d.slice(last)); n.replaceWith(f); }
+    }
+    return t.innerHTML;
+  }
+  // Wraps each top-level heading and everything after it, up to the next heading of its level or higher, in
+  // <section class="sec"><hN>…</hN><div class="sec-body">…</div></section>, nested by level. The file is untouched.
+  const chevron = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg>';
+  const LEVEL = ' (\u2325-click: every section at this level)';  // the tooltip is the one place that says so on screen
+  function sectionize(root) {
+    const top = document.createDocumentFragment(), stack = [{ level: 0, body: top }];
+    for (const n of [...root.childNodes]) {
+      const m = n.nodeType === 1 && /^H([1-6])$/.exec(n.tagName);
+      if (!m) { stack.at(-1).body.append(n); continue; }
+      const level = +m[1];
+      while (stack.at(-1).level >= level) stack.pop();
+      const sec = document.createElement('section'), body = document.createElement('div');
+      sec.className = 'sec'; sec.dataset.id = n.id; sec.dataset.level = level; body.className = 'sec-body';
+      n.insertAdjacentHTML('afterbegin', `<button class="fold" type="button" aria-expanded="true" aria-label="Collapse section" title="Collapse section${LEVEL}">${chevron}</button>`);
+      sec.append(n, body);
+      stack.at(-1).body.append(sec);
+      stack.push({ level, body });
+    }
+    root.replaceChildren(top);
+  }
+
+  // Folded sections, by heading id, remembered per file (and kept through live reloads).
+  let folded = new Set(), docKey = '';
+  const peeked = new Set();  // sections that find opened to show a match; they close again when find ends
+  function readFolds(key) { try { return new Set(JSON.parse(localStorage.getItem('folds:' + key) || '[]')); } catch { return new Set(); } }
+  function saveFolds() { try { localStorage.setItem('folds:' + docKey, JSON.stringify([...new Set([...folded, ...peeked])])); } catch {} }
+  // The place in each file (a fraction of its length), so a file opens where it was left.
+  function readPos(key) { try { return Math.min(1, Math.max(0, +localStorage.getItem('pos:' + key) || 0)); } catch { return 0; } }
+  function setFold(sec, f) {
+    sec.classList.toggle('folded', f);
+    const b = sec.firstElementChild.querySelector('.fold');
+    if (b) { const name = f ? 'Expand section' : 'Collapse section'; b.setAttribute('aria-expanded', !f); b.setAttribute('aria-label', name); b.title = name + LEVEL; }
+  }
+  function applyFolds() { arts.forEach(a => a.querySelectorAll('.sec').forEach(sec => setFold(sec, folded.has(sec.dataset.id)))); }
+
+  // Folding moves: a closing section's body shrinks to nothing and fades while everything after it slides up,
+  // through every window, since they all show the one flowing document; opening grows it back. Only the
+  // outermost changing sections animate; the ones inside them change with them. The heading stays in place.
+  // A second click mid-fold reverses from where the section is, never from a snapped start.
+  let folding = 0;
+  const running = new WeakMap();  // section body → its fold animation
+  // The reading place through a fold. `anchor` is the place kept while sections move: the block on the top line stays
+  // on its line. When its own section closes, the view rides up to that section's heading as the body shrinks, and
+  // the block is remembered (`lifted`) until the reader moves, so opening the section again returns to the same line.
+  let anchor = null, lifted = null;
+  function keepPlace() {
+    const p = anchor;
+    if (!p?.el.isConnected) return;
+    let el = p.el, own = true, ride = null;
+    for (let sec = el.parentElement.closest('.sec'); sec; sec = sec.parentElement.closest('.sec')) {
+      if (sec.firstElementChild.contains(el)) continue;  // a heading shows even when its own section is folded
+      if (running.has(sec.lastElementChild)) ride = sec;  // the outermost moving section
+      else if (sec.classList.contains('folded')) { el = sec.firstElementChild; own = false; ride = null; }
+    }
+    if (!el.getClientRects().length) return;
+    const top = clips[0].getBoundingClientRect().top, r = el.getBoundingClientRect();
+    // Where the block's line belongs; a heading that stands in for a hidden block sits one line below the top.
+    let to = s + (own ? r.top + (p.lines < 1.5 ? p.lines * L : p.part * r.height) - p.dy : r.top - L) - top;
+    if (ride) {
+      const body = ride.lastElementChild, open = Math.min(1, body.getBoundingClientRect().height / (body.scrollHeight || 1));
+      const head = s + ride.firstElementChild.getBoundingClientRect().top - L - top;
+      to = head + (to - head) * open;
+    } else lastS += to - s;  // the text stands still: the dots do too
+    s = to;
+  }
+  // The sections are where they stay: the place is put right, and a block that went out of sight is remembered.
+  function landed(back) {
+    const p = anchor;
+    keepPlace(); apply();
+    const gone = [p, back].find(x => x?.el.isConnected && !x.el.getClientRects().length);
+    lifted = gone ? { p: gone, s } : null;
+    anchor = null;
+  }
+  function refold(changed, instant) {
+    saveFolds();
+    saved = null;  // a fold changes the height of the document: the saved part no longer names this place
+    if (!arts.length) return;
+    const back = lifted && Math.abs(lifted.s - s) < 1 && lifted.p.el.isConnected ? lifted.p : null;
+    const seen = x => x.el.getClientRects().length > 0;
+    anchor = place?.s === s ? place : null;
+    lifted = null;
+    if (instant || reduced.matches) { applyFolds(); if (back && seen(back)) anchor = back; layout(); landed(back); return; }
+    const anims = [];
+    for (const a of arts) {
+      const secs = changed.map(id => a.querySelector(`.sec[data-id="${CSS.escape(id)}"]`)).filter(Boolean);
+      const outer = secs.filter(x => !secs.some(y => y !== x && y.contains(x)));
+      const close = secs.length && folded.has(secs[0].dataset.id);
+      const hidden = x => { for (let p = x.parentElement.closest('.sec'); p; p = p.parentElement.closest('.sec')) if (p.classList.contains('folded')) return true; return false; };
+      if (!close) secs.forEach(x => setFold(x, false));
+      for (const sec of outer) {
+        const body = sec.lastElementChild;
+        const old = running.get(body);
+        if (hidden(sec)) { old?.cancel(); setFold(sec, close); continue; }
+        let from = null, op = close ? 1 : 0;
+        if (old) {
+          const cs = getComputedStyle(body);
+          from = parseFloat(cs.height); op = +cs.opacity;
+          old.onfinish = null; old.cancel();
+        }
+        const full = body.offsetHeight, to = close ? 0 : full;
+        from ??= close ? full : 0;
+        if (close) sec.firstElementChild.querySelector('.fold')?.setAttribute('aria-expanded', false);  // chevron turns at once
+        body.style.overflow = 'clip';
+        const dur = Math.min(300, 200 + Math.abs(to - from) * .05);
+        // --ease-out, the repo's curve (WAAPI takes the literal)
+        const anim = body.animate([{ height: from + 'px', opacity: op }, { height: to + 'px', opacity: close ? 0 : 1 }],
+                                  { duration: dur, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'forwards' });
+        running.set(body, anim);
+        // Done only after the section has its final state (the `finished` promise comes before that), or when a
+        // second click took the animation over.
+        anims.push(new Promise(done => {
+          anim.oncancel = done;
+          anim.onfinish = () => {
+            if (close) secs.filter(x => sec.contains(x)).forEach(x => setFold(x, true));
+            running.delete(body); anim.cancel(); body.style.overflow = '';
+            done();
+          };
+        }));
+      }
+    }
+    if (back && seen(back)) anchor = back;  // its section opens again: back to the line the reader was on
+    // While sections move, keep the windows, ribbons and position bar in step with the changing length.
+    if (!folding++) requestAnimationFrame(function tick() {
+      if (!folding) return;
+      T = arts[0].offsetHeight; keepPlace(); apply();
+      requestAnimationFrame(tick);
+    });
+    settle();
+    Promise.all(anims).then(() => { folding--; settle(); layout(); if (!folding) landed(back); });
+  }
+  function toggle(id, sameLevel) {
+    const sec = arts[0].querySelector(`.sec[data-id="${CSS.escape(id)}"]`);
+    if (!sec) return;
+    const fold = !folded.has(id);
+    const ids = sameLevel ? [...arts[0].querySelectorAll(`.sec[data-level="${sec.dataset.level}"]`)].map(x => x.dataset.id) : [id];
+    const changed = ids.filter(i => folded.has(i) !== fold);
+    changed.forEach(i => { fold ? folded.add(i) : folded.delete(i); peeked.delete(i); });
+    refold(changed);
+  }
+  // Collapse all leaves a single document title open, so the result reads as an outline.
+  function foldAll(on, instant) {
+    const secs = [...(arts[0]?.querySelectorAll('.sec') ?? [])];
+    const tops = secs.filter(x => !x.parentElement.closest('.sec'));
+    const title = tops.length === 1 ? tops[0] : null;
+    const want = new Set(on ? secs.filter(x => x !== title).map(x => x.dataset.id) : []);
+    const changed = secs.map(x => x.dataset.id).filter(i => folded.has(i) !== want.has(i));
+    folded = want; peeked.clear();
+    refold(changed, instant);
+  }
+  // The text was laid out again at another height (a new window width, a font that arrived, an image that loaded):
+  // the reader stays at the same part of the document, not at the same number of pixels.
+  // `place` is the block on the line just under the top of the first column and how far through it that line is:
+  // in lines when the line is at the start of the block (a heading stays exactly where it was), else as a part of it.
+  let place = null;
+  function pin() {
+    place = null;
+    if (!arts.length || s <= 0) return;
+    const c = clips[0].getBoundingClientRect();
+    const at = (el, dy) => { const r = el.getBoundingClientRect(), off = c.top + dy - r.top; place = { el, lines: off / L, part: off / (r.height || 1), dy, s }; };
+    for (let dy = L; dy < 4 * L; dy += L / 2) {
+      const el = document.elementsFromPoint(c.left + c.width / 2, c.top + dy).find(x => x !== arts[0] && arts[0].contains(x))?.closest(LEAF);
+      if (el) return at(el, dy);
+    }
+    // Nothing under those points: a morph is running (the page takes no hits then), or a tall picture is there.
+    // The first block that reaches below the line is found by its position instead.
+    for (const el of arts[0].querySelectorAll(LEAF)) {
+      const r = el.getBoundingClientRect();
+      if (r.height && r.bottom > c.top + L) return at(el, L);
+    }
+  }
+  // `saved` is the place a file was reopened at, as the part of the document that was saved. It holds until the
+  // reader moves: at launch the text is laid out once before its font arrives, and the saved part is exact only
+  // in the layout it was saved in. A fold ends it too.
+  let saved = null;
+  const atSaved = () => saved && Math.abs(saved.s - s) < 1 ? saved : null;
+  // How the place is known now: 'top' (nothing is above the first line), 'restored' (the saved part of a reopened
+  // file), 'pinned' (a block on the top line) or 'part' (only how far through the document).
+  const placeKind = () => s <= 0 ? 'top' : atSaved() ? 'restored' : place?.s === s ? 'pinned' : 'part';
+  // Every change that lays the text out again goes through `hold`: it runs the change (which may build the columns
+  // anew, so the block is found again by its number) and puts that block back on its line.
+  function hold(change) {
+    const kind = placeKind(), back = kind === 'restored' ? saved : null, p = kind === 'pinned' ? place : null, f = frac();
+    const nth = x => x && change ? [...arts[0].querySelectorAll(LEAF)].indexOf(x) : -1, again = (x, n) => x.isConnected ? x : arts[0].querySelectorAll(LEAF)[n];
+    const i = nth(p?.el), kept = lifted && Math.abs(lifted.s - s) < 1 ? lifted.p : null, j = nth(kept?.el);
+    change?.();
+    layout();
+    const el = p && again(p.el, i);
+    if (back) s = back.f * T;
+    else if (el?.getClientRects().length) {
+      const r = el.getBoundingClientRect();
+      s += r.top + (p.lines < 1.5 ? p.lines * L : p.part * r.height) - (clips[0].getBoundingClientRect().top + p.dy);
+    } else s = f * T;
+    lastS = s; apply();
+    if (back) back.s = s;
+    // A block remembered through a fold is found again in the new columns, and the place it waits at is the new one.
+    const hid = kept && again(kept.el, j);
+    lifted = hid ? { p: { ...kept, el: hid }, s } : null;
+  }
+  const refit = () => hold();
+  const ro = new ResizeObserver(() => { if (!folding) refit(); });
+  function build() {
+    root.replaceChildren(); arts = []; clips = [];
+    root.style.setProperty('--n', N);
+    for (let k = 0; k < N; k++) {
+      const col = document.createElement('div'), clip = document.createElement('div'), art = document.createElement('div');
+      col.className = 'col'; clip.className = 'clip'; art.className = 'md'; art.innerHTML = html;
+      col.style.viewTransitionName = 'col-' + k;
+      if (k) {  // one document for VoiceOver and for the Tab key, not N copies
+        art.setAttribute('aria-hidden', 'true');
+        art.querySelectorAll('.fold, a, input').forEach(x => x.tabIndex = -1);
+      }
+      clip.append(art); col.append(clip); root.append(col); arts.push(art); clips.push(clip);
+    }
+    ro.disconnect(); ro.observe(arts[0]);
+    if (query) collect();
+  }
+  function layout() {
+    if (!arts.length) return;
+    H = clips[0].clientHeight;
+    L = parseFloat(getComputedStyle(arts[0]).lineHeight) || 24;
+    O = 2 * L;
+    T = arts[0].offsetHeight;
+    step = Math.max(1, H - O);
+    // Single only for a document whose whole text fits: collapsing sections never moves the text to the middle.
+    go('fill', T <= H && (state.fill === 'single' || !folded.size) ? 'single' : 'columns');
+    measure();
+    ribbons();
+    apply();
+  }
+  // Ribbon k: a band along the bottom of window k, a channel up gutter k, a band along the top of window k+1.
+  // Bands stop short of the neighbouring gutters' channels, so no two ribbons overlap.
+  let geo = [], cl = [], top0 = 0, dpr = 1, ink = '#5aa9ff';
+  function ribbons() {
+    const r = root.getBoundingClientRect(), c = clips.map(x => x.getBoundingClientRect());
+    const W = 20, GAP = 12, R = 10, END = 14;  // channel width, clearance to the next channel, corner radius, dot inset
+    const g = c.slice(1).map((b, k) => (c[k].right + b.left) / 2 - r.left);  // gutter centres
+    const top = c[0].top - r.top, bottom = c[0].bottom - r.top;
+    rib.setAttribute('viewBox', `0 0 ${r.width} ${r.height}`);
+    const rect = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${R}"/>`;
+    let svg = '';
+    const prev = geo;
+    geo = [];
+    for (let k = 0; k < N - 1; k++) {
+      const left = k === 0 ? c[0].left - r.left + 18 : g[k - 1] + W / 2 + GAP;
+      const right = k + 1 === N - 1 ? c[N - 1].right - r.left - 18 : g[k + 1] - W / 2 - GAP;
+      const x = g[k] - W / 2;
+      svg += `<g><g class="lane">${rect(left, bottom - O, x + W - left, O)}${rect(x, top, W, bottom - top)}${rect(x, top, right - x, O)}</g></g>`;
+      // The dot path: from the far end of window k's bottom band, to the gutter, up it, to the far end of
+      // window k+1's top band. Scrolling down moves the dots toward its start, the way the text goes.
+      const x0 = left + END, x1 = right - END, yb = bottom - O / 2, yt = top + O / 2;
+      const len1 = g[k] - x0, len2 = yb - yt, len3 = x1 - g[k];
+      geo.push({ k, top, bottom, g: g[k], x0, yb, yt, len1, len2, P: len1 + len2 + len3, start: prev[k]?.start ?? 0 });
+    }
+    rib.innerHTML = svg;
+    lanes = [...rib.children];
+    top0 = top;
+    cl = c.map(x => x.left - r.left);
+    dpr = devicePixelRatio || 1;
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    cv.style.width = r.width + 'px'; cv.style.height = r.height + 'px';
+    ink = getComputedStyle(document.documentElement).getPropertyValue('--link').trim() || ink;
+    kick();
+  }
+
+  // Where the text is: every line box and image of the document, in document coordinates (x from the
+  // window's left edge, y from the document's top), sorted by top. Measured once per layout.
+  let boxes = [], boxTall = 0;
+  function measure() {
+    const a = arts[0], ar = a.getBoundingClientRect(), x0 = clips[0].getBoundingClientRect().left, range = document.createRange(), out = [];
+    const walk = document.createTreeWalker(a, NodeFilter.SHOW_TEXT, { acceptNode: n => /\S/.test(n.data) ? 1 : 3 });
+    for (let n; (n = walk.nextNode());) {
+      range.selectNodeContents(n);
+      for (const q of range.getClientRects()) out.push({ l: q.left - x0, r: q.right - x0, t: q.top - ar.top, b: q.bottom - ar.top });
+    }
+    a.querySelectorAll('img').forEach(i => { const q = i.getBoundingClientRect(); out.push({ l: q.left - x0, r: q.right - x0, t: q.top - ar.top, b: q.bottom - ar.top }); });
+    out.sort((p, q) => p.t - q.t);
+    boxes = out;
+    boxTall = out.reduce((m, q) => Math.max(m, q.b - q.t), 0);
+  }
+  // How visible a dot may be at (x, y) of window w: about 10% on text, rising to full 7 px away from it.
+  const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  function clearOfText(w, X, Y) {
+    const x = X - cl[w], y = Y - top0 + s + w * step;
+    let lo = 0, hi = boxes.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (boxes[m].t <= y + 8) lo = m + 1; else hi = m; }
+    let d = Infinity;
+    for (let i = lo - 1; i >= 0 && boxes[i].t >= y - boxTall - 8; i--) {
+      const q = boxes[i];
+      d = Math.min(d, Math.max(q.l - x, x - q.r, q.t - y, y - q.b));
+    }
+    return .1 + .9 * smooth(0, 7, d);
+  }
+
+  // Whatever moves the text names itself here (`motion`, on the ribbons only: on the body it would restyle every
+  // column). The ribbons glow while the text moves and rest a moment after it stops. A new mover takes over from a
+  // glide at once; a drag lasts until the mouse button is released.
+  function moving(by = 'scrolling', ms = 180) {
+    if (by !== 'gliding') cancelAnimationFrame(glideId);
+    anchor = null;  // the reader moves: a fold in progress no longer holds the place
+    go('motion', by);
+    clearTimeout(still);
+    if (by !== 'dragging') still = setTimeout(() => go('motion', 'still'), ms);
+    glowUntil = performance.now() + ms;
+    kick();
+  }
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  // The focal moment when a file opens: each ribbon threads in, from the bottom of window k, up its gutter, into window k+1.
+  function threadIn() {
+    if (reduced.matches) return;
+    const now = performance.now();
+    geo.forEach((G, k) => G.start = now + 120 + k * 30);
+    moving('opening', 400);
+  }
+  // A heading link glides instead of cutting; keys move at once; any wheel input takes over at once.
+  let glideId = 0;
+  function glide(to, instant) {
+    to = Math.min(Math.max(0, to), maxS());
+    cancelAnimationFrame(glideId);
+    if (instant || reduced.matches) { s = to; moving(); apply(); return; }
+    const from = s, t0 = performance.now(), dur = 250;
+    moving('gliding');
+    const tick = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      s = p < 1 ? from + (to - from) * (1 - Math.pow(2, -10 * p)) : to;
+      moving('gliding'); apply();
+      if (p < 1) glideId = requestAnimationFrame(tick);
+    };
+    glideId = requestAnimationFrame(tick);
+  }
+
+  // One frame loop for the ribbons; it runs only while something moves.
+  // The dots follow the scroll speed, not the scroll position. Slow scrolling moves them with the text; fast
+  // scrolling saturates softly (tanh) at a calm top speed, kept well under half a dot gap per frame so the eye
+  // can track every dot (no wagon-wheel jumps). When scrolling stops they ease out (time constant 80 ms),
+  // so they come to rest in roughly the same time (well under a second) however far the scroll went.
+  const GAP_DOT = 26;
+  let dot = 0, dotVel = 0, scrollVel = 0, lastS = 0, frameT = 0, frameRaf = 0, glow = .3, glowUntil = 0, size = 4;
+  const drain = [];
+  function kick() { if (!frameRaf) { frameT = performance.now(); frameRaf = requestAnimationFrame(frame); } }
+  function frame(now) {
+    frameRaf = 0;
+    const dt = Math.max(1, Math.min(50, now - frameT)) / 1000;
+    frameT = now;
+    let busy = false;
+    if (reduced.matches) { dot = s; lastS = s; }
+    else {
+      const top = 12 * GAP_DOT;  // px/s; aliasing starts near 30 gaps per second at 60 fps
+      scrollVel += ((s - lastS) / dt - scrollVel) * Math.min(1, dt / .06);
+      lastS = s;
+      dotVel += (top * Math.tanh(scrollVel / top) - dotVel) * (1 - Math.exp(-dt / .08));
+      dot += dotVel * dt;
+      if (Math.abs(dotVel) > 1 || Math.abs(scrollVel) > 1) busy = true; else dotVel = scrollVel = 0;
+    }
+    const goal = now < glowUntil ? .75 : .3;  // brighter while the text flows
+    glow += (goal - glow) * (1 - Math.exp(-dt / (goal > glow ? .04 : .2)));
+    if (Math.abs(goal - glow) > .005 || now < glowUntil) busy = true; else glow = goal;
+    const want = document.documentElement.dataset.dots === 'big' ? 8 : 4;  // Bigger dots grows them smoothly
+    size += (want - size) * (1 - Math.exp(-dt / .08));
+    if (Math.abs(want - size) > .02) busy = true; else size = want;
+    geo.forEach((G, k) => {
+      const p = reduced.matches ? 1 : Math.min(1, Math.max(0, (now - G.start) / 250));
+      G.reveal = 1 - Math.pow(2, -10 * p) * (p < 1 ? 1 : 0);
+      if (p < 1) busy = true;
+      // Draining (end of the document) and threading in both show the ribbon from the bottom up.
+      G.cut = Math.max(1 - (drain[k] ?? 1), 1 - G.reveal);
+      if (lanes[k] && lanes[k].cut !== G.cut) { lanes[k].cut = G.cut; lanes[k].style.clipPath = `inset(${G.cut * 100}% 0 0 0)`; }
+    });
+    drawDots();
+    if (busy) kick();
+  }
+  // Each dot: bigger in the gutter, ¾ of that size in the bands, changing smoothly through the corners;
+  // fading in and out at the ends of the path; and in the bands, nearly invisible where text lies under it.
+  function drawDots() {
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx.clearRect(0, 0, cv.width, cv.height);
+    cx.fillStyle = ink;
+    const base = ((-dot % GAP_DOT) + GAP_DOT) % GAP_DOT;
+    for (const G of geo) {
+      const v = drain[G.k] ?? 1;
+      if (v <= 0) continue;
+      const cutY = G.top + G.cut * (G.bottom - G.top);
+      for (let u = base; u < G.P; u += GAP_DOT) {
+        let x, y, off;
+        if (u < G.len1) { x = G.x0 + u; y = G.yb; off = G.len1 - u; }
+        else if (u < G.len1 + G.len2) { x = G.g; y = G.yb - (u - G.len1); off = 0; }
+        else { x = G.g + (u - G.len1 - G.len2); y = G.yt; off = u - G.len1 - G.len2; }
+        if (y < cutY) continue;
+        const inGutter = 1 - smooth(0, 48, off);
+        let a = glow * v * smooth(0, 60, u) * smooth(0, 60, G.P - u);
+        if (inGutter < 1) a *= inGutter + (1 - inGutter) * clearOfText(u < G.len1 ? G.k : G.k + 1, x, y);
+        if (a < .01) continue;
+        cx.globalAlpha = a;
+        cx.beginPath();
+        cx.arc(x, y, size * (.75 + .25 * inGutter) / 2, 0, 6.2832);  // band dots are ¾ of the gutter size
+        cx.fill();
+      }
+    }
+    cx.globalAlpha = 1;
+  }
+  // Changes that morph the layout (the number of columns, bold word starts, the font) run one at a time: one asked
+  // for while another runs waits for it, and the latest value of each kind wins; skipping a running morph would
+  // snap it. Whether a value is already on the page (`isNow`) is asked when the change runs, never when it is asked
+  // for: a morph changes the page a moment after it starts. With no document on the page there is nothing to morph.
+  let morphing = null;
+  const waiting = new Map();  // kind → the latest value asked for that is not on the page yet
+  const settle = () => go('layout', morphing ? 'morphing' : folding ? 'folding' : 'settled');
+  function morph(kind, value, isNow, change, instant) {
+    waiting.set(kind, { value, isNow, change });
+    if (!morphing) return flush(instant);
+    // At once (from the keyboard) during a morph: right after that morph has changed the page, so it cannot undo this.
+    if (instant) morphing.updateCallbackDone.finally(() => flush(true));
+  }
+  function flush(instant) {
+    const todo = [...waiting.values()].filter(x => !x.isNow(x.value));
+    waiting.clear();
+    if (!todo.length) return;
+    const all = () => todo.forEach(x => { if (!x.isNow(x.value)) x.change(x.value); });
+    if (instant || state.page !== 'document' || !document.startViewTransition) return all();
+    const t = morphing = document.startViewTransition(all);
+    settle();
+    t.ready.catch(() => {});  // a morph that was skipped is no error
+    const stall = setTimeout(() => t.skipTransition(), 600);  // a morph that cannot render (hidden window) never blocks the next
+    t.finished.finally(() => { clearTimeout(stall); morphing = null; settle(); flush(); });
+  }
+  const span = () => (N - 1) * step + H;
+  const frac = () => T ? s / T : 0;
+  // Scrolling goes on until the end of the document reaches the bottom of window 1, so it always moves,
+  // even when the whole document fits in the windows.
+  const maxS = () => Math.max(0, T - H);
+  const endS = () => Math.max(0, T - span());  // End: the last part of the document fills every window
+  const edges = new WeakMap();
+  function edge(c, name, px) {
+    const v = Math.round(Math.min(L, Math.max(0, px)) * 2) / 2, seen = edges.get(c) ?? {};
+    if (seen[name] !== v) { seen[name] = v; edges.set(c, seen); c.style.setProperty(name, v + 'px'); }
+  }
+  function apply() {
+    s = Math.min(Math.max(0, s), maxS());
+    arts.forEach((a, k) => a.style.transform = `translateY(${-(s + k * step)}px)`);
+    clips.forEach((c, k) => {  // dissolve an edge only where text continues past it
+      const start = s + k * step;
+      // The fade deepens with the scroll over one line, so it never pops on or off at either end.
+      edge(c, '--top', k > 0 ? T - start : s);
+      edge(c, '--bottom', T - start - H);
+      if (lanes[k]) {
+        // Near the end of the document the ribbon drains: as the end nears the top of window k+1 it withdraws
+        // from window k+1, down the gutter, into window k (where the last text went), and fades out.
+        const v = Math.min(1, Math.max(0, (T - start - step) / (H * .6)));
+        drain[k] = v;
+        if (lanes[k].v !== v) { lanes[k].v = v; lanes[k].style.opacity = v; lanes[k].style.visibility = v ? '' : 'hidden'; }
+      }
+    });
+    kick();
+    if (bar.hidden !== (T <= H)) bar.hidden = T <= H;
+    thumb.style.transform = `translateY(${s / T * innerHeight}px)`;  // composite only; height changes only near the end
+    const th = Math.round(Math.max(24, Math.min(span(), T - s) / T * innerHeight));
+    if (thumb.h !== th) { thumb.h = th; thumb.style.height = th + 'px'; }
+    pin();
+    tell();
+  }
+  // What the app's menus and find bar need to know, sent a moment after things settle; the place in the file is
+  // saved with it.
+  let telling = 0, trail = [], ahead = [];
+  function outlineState() {
+    const all = arts[0] && state.page === 'document' ? [...arts[0].querySelectorAll('.sec')] : [];
+    const tops = all.filter(x => !x.parentElement.closest('.sec')), title = tops.length === 1 ? tops[0] : null;
+    return { sections: all.length, canCollapse: all.some(x => x !== title && !folded.has(x.dataset.id)), canExpand: all.some(x => folded.has(x.dataset.id)) };
+  }
+  function tell() {
+    clearTimeout(telling);
+    telling = setTimeout(() => {
+      if (!arts.length || !docKey) return;
+      const here = shown().filter(h => /^H[1-3]$/.test(h.tagName)).findLast(h => docY(h) - L <= s + 2);
+      try { localStorage.setItem('pos:' + docKey, (atSaved()?.f ?? frac()).toFixed(5)); } catch {}
+      window.webkit?.messageHandlers?.state?.postMessage({
+        ...outlineState(), section: here?.id ?? '', canBack: trail.length > 0, canForward: ahead.length > 0,
+        find: query ? { count: hits.length, index: at + 1 } : null, selection: !getSelection().isCollapsed,
+      });
+    }, 120);
+  }
+  // Back and Forward: a jump (a heading link, Go > a section, Beginning, End, the position bar, a find) remembers
+  // where it left from, so one command returns there.
+  function mark(from = frac()) { trail.push(from); if (trail.length > 50) trail.shift(); ahead = []; }
+  function travel(from, to, instant) { if (from.length) { to.push(frac()); glide(from.pop() * T, instant); } }
+  function scrollBy(d) { s += d; moving(); if (!raf) raf = requestAnimationFrame(() => { raf = 0; apply(); }); }
+
+  addEventListener('wheel', e => {
+    e.preventDefault();  // never let the web view scroll or bounce the page itself
+    if (e.ctrlKey || state.page !== 'document') return;
+    cancelAnimationFrame(glideId);
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {  // sideways: wide code blocks and tables
+      const box = e.target.closest && e.target.closest('pre, table');
+      if (box) box.scrollLeft += e.deltaX;
+      return;
+    }
+    scrollBy(e.deltaY * (e.deltaMode === 1 ? L : e.deltaMode === 2 ? H : 1));
+  }, { passive: false });
+  addEventListener('keydown', e => {
+    if (state.page !== 'document' || e.target.closest?.('button')) return;  // Space and Enter press a focused fold button
+    const page = N * step, end = e.metaKey;
+    const d = { ArrowDown: end ? Infinity : 3 * L, ArrowUp: end ? -Infinity : -3 * L, PageDown: page, PageUp: -page,
+                ' ': e.shiftKey ? -page : page, Home: -Infinity, End: Infinity }[e.key];
+    if (d === undefined || (e.metaKey && !e.key.startsWith('Arrow'))) return;
+    e.preventDefault(); glide(d === Infinity ? endS() : s + d, true);
+  });
+  addEventListener('resize', refit);
+  // Tab reaches fold buttons and links in the first copy only; one that no column shows is brought into view.
+  document.addEventListener('selectionchange', tell);
+  addEventListener('focusin', e => {
+    const el = e.target.closest?.('.fold, a');
+    clips.forEach(c => { if (c.scrollTop) c.scrollTop = 0; });  // the browser's own scroll-to-focus would shift a column
+    if (!el || !arts[0]?.contains(el) || !el.matches(':focus-visible')) return;
+    const y = docY(el);
+    if (y < s || y + L > s + span()) glide(y - L, true);
+  });
+  // Every column holds a copy of the document, so a selection can run from one copy into the next, or over all
+  // of them (Select All). Copy maps both ends to the first copy and takes the text between them once.
+  function inFirst(node, offset) {
+    const k = arts.findIndex(a => a.contains(node));
+    if (k < 0) return null;
+    if (k === 0) return [node, offset];
+    const path = [];
+    for (let n = node; n !== arts[k]; n = n.parentNode) path.unshift([...n.parentNode.childNodes].indexOf(n));
+    let to = arts[0];
+    for (const i of path) to = to?.childNodes[i];
+    return to ? [to, offset] : null;
+  }
+  function copied() {
+    const sel = getSelection();
+    if (!sel.rangeCount || sel.isCollapsed || !arts.length || state.page !== 'document') return null;
+    const r = sel.getRangeAt(0);
+    if (!r.intersectsNode(root)) return null;
+    const a = inFirst(r.startContainer, r.startOffset) ?? [arts[0], 0];
+    const b = inFirst(r.endContainer, r.endOffset) ?? [arts[0], arts[0].childNodes.length];
+    const out = new Range();
+    out.setStart(...a); out.setEnd(...b);
+    if (out.collapsed) { out.setStart(...b); out.setEnd(...a); }  // the two lines both columns show: the end maps before the start
+    if (out.collapsed) return null;
+    const keep = [sel.anchorNode, sel.anchorOffset, sel.focusNode, sel.focusOffset];
+    sel.removeAllRanges(); sel.addRange(out);
+    const text = sel.toString();
+    sel.setBaseAndExtent(...keep);
+    const box = document.createElement('div');
+    box.append(out.cloneContents());
+    box.querySelectorAll('.fold, .sec.folded > .sec-body').forEach(x => x.remove());
+    box.querySelectorAll('b.ws').forEach(x => x.replaceWith(...x.childNodes));  // bold word starts change the screen, not the text
+    box.querySelectorAll('[title]').forEach(x => x.removeAttribute('title'));
+    box.querySelectorAll('.sec, .sec-body').forEach(x => x.replaceWith(...x.childNodes));  // the page's own wrappers stay here
+    box.normalize();
+    return { text, html: box.innerHTML };
+  }
+  addEventListener('copy', e => {
+    const c = copied();
+    if (!c) return;
+    e.clipboardData.setData('text/plain', c.text); e.clipboardData.setData('text/html', c.html);
+    e.preventDefault();
+  });
+  // Tells the app what a right-click is on, so its menu can offer what fits there.
+  addEventListener('contextmenu', e => {
+    const sec = e.target.closest('.sec'), a = e.target.closest('a[href]');
+    window.webkit?.messageHandlers?.menu?.postMessage({
+      section: sec?.dataset.id ?? '', title: sec?.firstElementChild.textContent.trim() ?? '',
+      folded: sec?.classList.contains('folded') ?? false,
+      link: a && !a.getAttribute('href').startsWith('#') ? a.href : '',
+      ...outlineState(),
+    });
+  });
+  addEventListener('click', e => {
+    const f = e.target.closest('.fold');
+    if (f) { e.preventDefault(); toggle(f.closest('.sec').dataset.id, e.altKey); return; }  // ⌥-click: the whole level
+    const a = e.target.closest('a'), href = a && a.getAttribute('href');
+    if (!href) return;
+    e.preventDefault();
+    if (href.startsWith('#')) {
+      let id = href.slice(1);
+      try { id = decodeURIComponent(id); } catch {}
+      return jump(id);
+    }
+    // Every other link goes to the app, which opens it (a web page, another file) or says why it cannot.
+    window.webkit?.messageHandlers?.link?.postMessage(a.href);
+  });
+  // Where a node sits in the document (y from its top), after opening any folded section that hides it.
+  // A section that find opens is only peeked into; one opened by a jump stays open.
+  function reveal(node, byFind) {
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    let opened = false;
+    for (let sec = el.closest('.sec'); sec; sec = sec.parentElement.closest('.sec')) {
+      if (sec.firstElementChild.contains(el)) continue;  // a heading shows even when its own section is folded
+      if (!byFind) peeked.delete(sec.dataset.id);
+      if (folded.delete(sec.dataset.id)) { opened = true; if (byFind) peeked.add(sec.dataset.id); }
+    }
+    if (opened) { applyFolds(); layout(); saveFolds(); }
+  }
+  const docY = r => r.getBoundingClientRect().top - arts[0].getBoundingClientRect().top;
+  // A heading link (or Go > a section) glides there and marks the heading for a moment.
+  function jump(id, instant) {
+    if (!id) { mark(); return glide(0, instant); }  // "#" alone: the beginning
+    const byId = x => x && arts[0]?.querySelector('#' + CSS.escape(x));
+    const el = byId(id) ?? byId(id = slug(id));  // a link written with capitals or spaces names the same heading
+    if (!el) return;
+    mark();
+    reveal(el);
+    glide(docY(el) - L, instant);
+    setTimeout(() => arts.forEach(a => a.querySelector('#' + CSS.escape(id))?.classList.add('lit')), instant ? 0 : 250);  // after the glide
+  }
+  const shown = () => [...arts[0].querySelectorAll('h1, h2, h3, h4, h5, h6')].filter(h => h.getClientRects().length);
+  // Go > Next or Previous Section: the next heading below the top of the first column, or the one above it.
+  function heading(dir, instant) {
+    if (!arts.length) return;
+    const ys = shown().map(h => docY(h) - L);
+    const to = dir > 0 ? ys.find(y => y > s + 2) : ys.findLast(y => y < s - 2);
+    mark();
+    glide(to ?? (dir > 0 ? endS() : 0), instant);
+  }
+
+  // Find: matches within the text of the document, tinted in every column (each holds a copy of it).
+  // The current match is brought into view only when no column shows it.
+  let query = '', hits = [], at = -1, findFrom = null;  // findFrom: the place before this find began
+  // A phrase may run over several text nodes (bold, a link, bold word starts), so each block's text is searched as one string.
+  // Text as find compares it: lower case letter by letter (so the query and the document always agree), and any run
+  // of white space (a line break in the file, an indented next line) as one space, as on the page. `from[i]` and
+  // `to[i]` say where the i-th character of that text began and ended in the text it was made from.
+  function findText(raw) {
+    const from = [], to = [];
+    let text = '';
+    for (let i = 0; i < raw.length;) {
+      const code = raw.codePointAt(i), next = i + (code > 0xffff ? 2 : 1);
+      const space = code <= 32 || (code > 126 && /\s/.test(raw[i]));
+      if (space) {
+        if (text.endsWith(' ')) to[to.length - 1] = next;
+        else { text += ' '; from.push(i); to.push(next); }
+      } else {
+        const low = code < 128 ? (code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : raw[i]) : raw.slice(i, next).toLowerCase().replace('ς', 'σ');
+        for (let k = 0; k < low.length; k++) { from.push(i); to.push(next); }
+        text += low;
+      }
+      i = next;
+    }
+    return { text, from, to };
+  }
+  function matches(a) {
+    const out = [], q = findText(query).text, walk = document.createTreeWalker(a, NodeFilter.SHOW_TEXT);
+    if (!q) return out;
+    let block = null, run = [];
+    const place = (i, end) => { for (const n of run) { if (end ? i <= n.length : i < n.length) return [n, i]; i -= n.length; } return [run.at(-1), run.at(-1).length]; };
+    const flush = () => {
+      const { text, from, to } = findText(run.map(n => n.data).join(''));
+      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+        const r = new Range();
+        r.setStart(...place(from[i])); r.setEnd(...place(to[i + q.length - 1], true)); out.push(r);
+      }
+      run = [];
+    };
+    for (let n; (n = walk.nextNode());) {
+      const of = n.parentElement.closest(LEAF) ?? n.parentElement;
+      if (of !== block) { if (run.length) flush(); block = of; }
+      run.push(n);
+    }
+    if (run.length) flush();
+    return out;
+  }
+  function paint() {
+    go('find', !query ? 'off' : hits.length ? 'found' : 'none');
+    if (!window.Highlight) return;
+    // No matches: remove the highlights (an empty one can leave the old tint painted).
+    if (!hits.length) { CSS.highlights.delete('find'); CSS.highlights.delete('find-now'); return; }
+    CSS.highlights.set('find', new Highlight(...hits.flat()));
+    CSS.highlights.set('find-now', new Highlight(...(hits[at] ?? [])));
+  }
+  function collect() {  // hits[i] = the i-th match in every column
+    const per = arts.map(matches);
+    hits = query ? per[0].map((_, i) => per.map(p => p[i]).filter(Boolean)) : [];
+    if (at >= hits.length) at = hits.length - 1;
+    paint();
+  }
+  function show(instant) {
+    const r = hits[at]?.[0];
+    if (!r) return;
+    reveal(r.startContainer, true);
+    for (const c of hits[at]) {  // a match in the hidden part of a wide table: scroll the table to it, in every column
+      const box = c.startContainer.parentElement.closest('table');
+      if (!box) continue;
+      const a = c.getBoundingClientRect(), b = box.getBoundingClientRect();
+      if (a.left < b.left + 24 || a.right > b.right - 24) box.scrollLeft += a.left - b.left - b.width / 3;
+    }
+    const y = docY(r);
+    if (y < s + L || y + 2 * L > s + span()) glide(y - H / 3, instant);
+  }
+  function find(q, dir, instant) {
+    if (q && findFrom === null) findFrom = frac();
+    if (q !== query) {
+      query = q; at = -1; collect();
+      if (hits.length) {  // start at the first match on screen or after it
+        const i = hits.findIndex(h => docY(h[0]) >= s);
+        at = i < 0 ? 0 : i;
+      }
+      if (dir < 0 && hits.length) at = (at - 1 + hits.length) % hits.length;
+    } else if (hits.length && dir) at = (at + dir + hits.length) % hits.length;
+    paint(); show(instant); tell();
+    return { count: hits.length, index: at + 1 };
+  }
+  // Find ends: the sections it opened close again, except the one that holds the current match, which stays
+  // where it is on screen. If the find moved the view, Back returns to where it began.
+  function endFind() {
+    const r = hits[at]?.[0];
+    // The highlights go before the sections close: removed after the page moved, they left a strip of tint behind.
+    if (window.Highlight) { CSS.highlights.delete('find'); CSS.highlights.delete('find-now'); }
+    if (peeked.size) {
+      const keep = new Set();
+      if (r) for (let sec = r.startContainer.parentElement.closest('.sec'); sec; sec = sec.parentElement.closest('.sec')) keep.add(sec.dataset.id);
+      const y0 = r ? docY(r) : 0, close = [...peeked].filter(id => !keep.has(id));
+      close.forEach(id => folded.add(id));
+      peeked.clear();
+      if (close.length) { applyFolds(); layout(); if (r) s += docY(r) - y0; lastS = s; apply(); }
+      saveFolds();
+    }
+    if (findFrom !== null && Math.abs(frac() - findFrom) * T > H / 2) mark(findFrom);
+    findFrom = null; query = ''; hits = []; at = -1; paint(); tell();
+  }
+  // The pointer moving over the page shows the fold chevrons for a moment.
+  let pointing = 0;
+  addEventListener('mousemove', () => {
+    go('pointer', 'moving');
+    clearTimeout(pointing); pointing = setTimeout(() => go('pointer', 'resting'), 1500);
+  });
+  const note = document.getElementById('note');
+  // Leaf blocks: the smallest blocks that hold text, keyed by tag and text.
+  const LEAF = 'p, li, pre, blockquote, h1, h2, h3, h4, h5, h6, td, th';
+  const leaves = a => [...a.querySelectorAll(LEAF)].filter(x => !x.querySelector(LEAF));
+  const keyOf = x => x.tagName + '|' + x.textContent.trim();
+  function lightUp(test) {
+    const lit = x => {  // a change inside a collapsed section shows at the heading of that section
+      for (let sec = x.closest('.sec.folded'); sec; sec = sec.parentElement.closest('.sec.folded')) x = sec.firstElementChild;
+      x.classList.add('lit');
+    };
+    arts.forEach(a => leaves(a).forEach(x => test(x) && lit(x)));
+    bar.querySelectorAll('.tick').forEach(x => x.remove());
+    const ys = leaves(arts[0]).filter(x => x.classList.contains('lit') && x.getClientRects().length).map(docY).filter(y => y < s - L || y > s + span());
+    for (const y of ys.filter((y, i) => !i || y - ys[i - 1] > T / 200).slice(0, 40)) {
+      const tick = document.createElement('i');
+      tick.className = 'tick'; tick.style.top = y / T * 100 + '%';
+      bar.append(tick);
+    }
+  }
+  addEventListener('animationend', e => { if (e.animationName === 'lit') e.target.classList.remove('lit'); if (e.animationName === 'tick') e.target.remove(); });
+  function seek(e) { moving('dragging'); s = e.clientY / innerHeight * T - span() / 2; apply(); }
+  bar.addEventListener('mousedown', e => {
+    mark();
+    seek(e);
+    const up = () => { removeEventListener('mousemove', seek); removeEventListener('mouseup', up); moving(); };
+    addEventListener('mousemove', seek); addEventListener('mouseup', up);
+  });
+
+  const doc = () => state.page === 'document';  // the commands for a document do nothing while a message stands in for it
+  return {
+    load(md, base, keep, key = base, resume = true) {
+      document.querySelector('base').href = base;
+      const fresh = key !== docKey;
+      if (fresh) {
+        const was = docKey, moved = keep && was;  // the same file under a new name or in a new place keeps its folds and its place
+        docKey = key;
+        if (moved) { saveFolds(); try { localStorage.removeItem('folds:' + was); localStorage.removeItem('pos:' + was); } catch {} }
+        else { folded = readFolds(key); peeked.clear(); trail = []; ahead = []; findFrom = null; go('fill', 'columns'); }
+      }
+      const before = keep && arts[0] ? new Set(leaves(arts[0]).map(keyOf)) : null;
+      // An edit keeps the block on the top line where it is, even when text was added or removed above it.
+      // A block is known again by its text, its section and the blocks before and after it. When several fit equally
+      // well, it is the one at the old count among the blocks with that text, if that is one of them; else none, and
+      // the place stays where it was in pixels.
+      const sid = x => x.closest('.sec')?.dataset.id ?? '';
+      const blocks = () => { const b = [...arts[0].querySelectorAll(LEAF)]; return { b, k: b.map(keyOf) }; };
+      const sign = x => {
+        const { b, k } = blocks(), i = b.indexOf(x);
+        return i < 0 ? null : { k: k[i], sec: sid(x), prev: k[i - 1], next: k[i + 1], n: k.slice(0, i).filter(y => y === k[i]).length };
+      };
+      const again = m => {
+        if (!m) return null;
+        const { b, k } = blocks(), fit = [];
+        k.forEach((y, i) => { if (y === m.k) fit.push({ el: b[i], score: (sid(b[i]) === m.sec ? 2 : 0) + (k[i - 1] === m.prev ? 1 : 0) + (k[i + 1] === m.next ? 1 : 0) }); });
+        const best = Math.max(-1, ...fit.map(x => x.score)), top = fit.filter(x => x.score === best);
+        return top.length === 1 ? top[0].el : fit[m.n]?.score === best ? fit[m.n].el : null;
+      };
+      const p = keep && arts[0] && place?.s === s ? place : null, was = p && sign(p.el);
+      // A block that a collapsed section hides, remembered for when the section opens again, is carried over too.
+      const kept = keep && arts[0] && lifted && Math.abs(lifted.s - s) < 1 ? lifted.p : null, hid = kept && sign(kept.el);
+      const old = s; plain = toHtml(md); html = boldStarts ? embolden(plain) : plain; build(); applyFolds(); layout();
+      const part = !keep && fresh && resume ? readPos(key) : 0;
+      s = keep ? old : part * T; lastS = s; apply();
+      const el = again(was);
+      if (el?.getClientRects().length) {
+        const r = el.getBoundingClientRect();
+        s += r.top + (p.lines < 1.5 ? p.lines * L : p.part * r.height) - (clips[0].getBoundingClientRect().top + p.dy);
+        lastS = s; apply();
+      }
+      const stays = again(hid);
+      lifted = stays ? { p: { ...kept, el: stays }, s } : null;
+      saved = part ? { f: part, s } : null;
+      if (before) {  // an edit, not a new document: tint the blocks that changed
+        const now = leaves(arts[0]), fresh = now.filter(x => !before.has(keyOf(x))).length;
+        if (fresh && fresh <= now.length * .4) lightUp(x => !before.has(keyOf(x)));
+      }
+      if (!keep) threadIn();
+      go('page', 'document');
+      // The outline for Go > Section.
+      window.webkit?.messageHandlers?.outline?.postMessage([...arts[0].querySelectorAll('h1, h2, h3')].map(h => ({ id: h.id, title: h.textContent.trim(), level: +h.tagName[1] })));
+    },
+    message(title, detail) {  // a file that cannot be shown: say what happened instead of showing nothing
+      if (query) endFind();
+      getSelection().removeAllRanges();  // nothing of the text behind the message stays selected
+      note.querySelector('h1').textContent = title; note.querySelector('p').textContent = detail; go('page', 'message');
+    },
+    // Every state of the page by name: the five machines, how the place is held, and what the sections are doing.
+    state() {
+      return { ...state, place: placeKind(), columns: N, boldStarts, matches: hits.length, match: at + 1,
+               sections: arts[0]?.querySelectorAll('.sec').length ?? 0, folded: [...folded], peeked: [...peeked], waiting: [...waiting.keys()] };
+    },
+    find(q, dir, instant) { return doc() ? find(q, dir, instant) : { count: 0, index: 0 }; },
+    endFind,
+    selection() { return (copied()?.text ?? getSelection().toString()).trim(); },
+    heading(dir, instant) { if (doc()) heading(dir, instant); },
+    jump(id, instant) { if (doc()) jump(id, instant); },
+    go(where, instant) { if (doc()) { mark(); glide(where === 'end' ? endS() : 0, instant); } },
+    back(instant) { if (doc()) travel(trail, ahead, instant); },
+    forward(instant) { if (doc()) travel(ahead, trail, instant); },
+    // One clean copy of the document for Print and Export as PDF: light, every section open, no columns.
+    printable() {
+      const here = location.href.replace(/[^/]*$/, ''), style = document.querySelector('style').textContent.replace(/url\(Libron/g, `url(${here}Libron`);
+      const fam = document.documentElement.dataset.family ? ` data-family="${document.documentElement.dataset.family}"` : '';
+      return `<!doctype html><html lang="en" data-theme="light"${fam}><head><meta charset="utf-8"><base href="${document.querySelector('base').href}">
+<style>${style}</style><style>
+  html, body { height: auto; overflow: visible; background: #fff; transition: none; }
+  .md { transform: none !important; will-change: auto; max-width: none; padding: 0; }
+  .fold, .sec.folded > :first-child::after { display: none !important; }
+  .sec.folded > .sec-body { display: block !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .md table { display: table; width: 100%; background: none; } .md th, .md td { overflow-wrap: anywhere; min-width: 0; }
+  .md h1, .md h2, .md h3, .md h4 { break-after: avoid; } .md pre, .md tr, .md img, .md blockquote { break-inside: avoid; }
+</style></head><body><div class="md">${plain}</div></body></html>`;
+    },
+    foldAll(on, instant) { if (doc()) foldAll(on, instant); },
+    toggleSection(id) { if (doc()) toggle(id, false); },
+    setColumns(n, instant) {
+      // The place is held when the change runs, not when it is asked for: a morph runs a moment later.
+      morph('columns', n, n => n === N && arts.length > 0, n => hold(() => { N = n; build(); applyFolds(); }), instant);
+    },
+    setFont(px) { hold(() => document.documentElement.style.setProperty('--fs', px + 'px')); },
+    setDots(big) { if (big) document.documentElement.dataset.dots = 'big'; else delete document.documentElement.dataset.dots; kick(); },
+    setBoldStarts(on) {
+      morph('boldStarts', on, on => on === boldStarts, on => {
+        boldStarts = on;
+        if (arts.length) hold(() => { html = on ? embolden(plain) : plain; build(); applyFolds(); });
+      });
+    },
+    setTheme(name) {
+      if (name === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = name;
+      ink = getComputedStyle(document.documentElement).getPropertyValue('--link').trim() || ink;
+      kick();
+    },
+    setFamily(name) {
+      const root = document.documentElement;
+      morph('family', name, name => (root.dataset.family ?? 'system') === name,
+            name => hold(() => { if (name === 'system') delete root.dataset.family; else root.dataset.family = name; }));
+      document.fonts.ready.then(refit);  // Libron loads after the first layout
+    },
+  };
+})();
+</script>
+</body>
+</html>
