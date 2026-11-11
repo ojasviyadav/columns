@@ -60,7 +60,7 @@
   /* Each hand-off is one ribbon: along the bottom of window k, up the gutter, along the top of window k+1.
      Its dots move exactly with the text, so the gutter visibly carries text from one window into the other. */
   #ribbons, #dots { position: fixed; top: 0; left: 0; pointer-events: none; }
-  #ribbons { right: 10px; bottom: 0; }
+  #ribbons { right: 10px; bottom: 0; color: var(--link); transition: color .3s ease; }  /* color: the edges' fades */
   /* A lane is one shape (two bands joined by a narrow gutter channel), tinted as a group so its parts never
      darken where they meet. The dots are drawn on a canvas (see drawDots). */
   #ribbons .lane { fill: var(--link); opacity: .075; transition: opacity .6s ease-out, fill .3s ease; }
@@ -88,8 +88,8 @@
   .fold:active { scale: .92; }  /* the press is felt before the section moves */
   .fold svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round;
               stroke-linejoin: round; transition: rotate .22s var(--ease-out); }
-  #cols[data-pointer="moving"] .fold { opacity: .3; }  /* while the pointer moves over the page, every heading shows it can fold */
-  .md :is(h1, h2, h3, h4, h5, h6):hover > .fold, .fold:focus-visible, .fold[aria-expanded="false"] { opacity: .75; }
+  #cols[data-pointer="moving"] .fold { opacity: .38; }  /* while the pointer moves over the page, every heading shows it can fold */
+  .md :is(h1, h2, h3, h4, h5, h6):hover > .fold, .fold:focus-visible, .fold[aria-expanded="false"] { opacity: .94; }
   .fold:hover { opacity: 1; background: color-mix(in oklab, var(--fg) 9%, transparent); }
   .fold:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
   .fold[aria-expanded="false"] svg { rotate: -90deg; }
@@ -449,32 +449,67 @@ const R = (() => {
     ribbons();
     apply();
   }
-  // Ribbon k: a band along the bottom of window k, a channel up gutter k, a band along the top of window k+1.
-  // Bands stop short of the neighbouring gutters' channels, so no two ribbons overlap.
-  let geo = [], cl = [], top0 = 0, dpr = 1, ink = '#5aa9ff';
+  // The ribbons are one conveyor that carries the text through the columns. Ribbon k: a band along the bottom of
+  // column k, a channel up gutter k, a band along the top of column k+1. Two open channels finish it at the outer
+  // edges: up the right edge of the last column, where the text comes in from below, and up the left edge of the
+  // first column, where it goes out at the top. Each joins the band it meets, so the dots run through the corner;
+  // their open ends fade out of the page. Bands stop short of the neighbouring channels, so no two ribbons overlap.
+  let geo = [], cl = [], top0 = 0, dpr = 1, ink = '#5aa9ff', edgeEls = {}, edgeV = { l: 0, r: 0 };
+  const OPEN = 120;  // how far the open end of an edge fades, in the tint and in the dots
   function ribbons() {
     const r = root.getBoundingClientRect(), c = clips.map(x => x.getBoundingClientRect());
-    const W = 20, GAP = 12, R = 10, END = 14;  // channel width, clearance to the next channel, corner radius, dot inset
+    const W = 20, GAP = 12, R = 10, END = 14, EDGE = 24;  // channel width, clearance, corner radius, dot inset, edge channel centre from the outer edge
     const g = c.slice(1).map((b, k) => (c[k].right + b.left) / 2 - r.left);  // gutter centres
     const top = c[0].top - r.top, bottom = c[0].bottom - r.top;
+    const xL = c[0].left - r.left + EDGE, xR = c[N - 1].right - r.left - EDGE;
     rib.setAttribute('viewBox', `0 0 ${r.width} ${r.height}`);
-    const rect = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${R}"/>`;
-    let svg = '';
-    const prev = geo;
+    const rect = (x, y, w, h, more = '') => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${R}"${more}/>`;
+    const edgeL = () => rect(xL - W / 2, top, W, bottom - top, ' class="edge" data-side="l" fill="url(#edge-out)"');
+    const edgeR = () => rect(xR - W / 2, top, W, bottom - top, ' class="edge" data-side="r" fill="url(#edge-in)"');
+    let svg = `<defs>
+      <linearGradient id="edge-out" gradientUnits="userSpaceOnUse" x1="0" y1="${top}" x2="0" y2="${top + OPEN}"><stop offset="0" stop-color="currentColor" stop-opacity="0"/><stop offset="1" stop-color="currentColor"/></linearGradient>
+      <linearGradient id="edge-in" gradientUnits="userSpaceOnUse" x1="0" y1="${bottom - OPEN}" x2="0" y2="${bottom}"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>`;
+    const prev = geo, yb = bottom - O / 2, yt = top + O / 2;
     geo = [];
+    // A dot path is a list of points; each leg knows the column it lies in (for the text under it) and whether it is
+    // a channel (upright) or a band, and the edge it belongs to.
+    const path = (k, pts, open0, open1) => {
+      const legs = [];
+      let P = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i], len = Math.hypot(b.x - a.x, b.y - a.y);
+        legs.push({ a, b, len, u0: P, up: a.x === b.x, win: a.win, side: a.side });
+        P += len;
+      }
+      geo.push({ k, legs, P, top, bottom, open0, open1, start: prev[geo.length]?.start ?? 0 });
+    };
+    if (N === 1) {
+      svg += `<g><g class="lane">${edgeL()}${edgeR()}</g></g>`;
+      path(-1, [{ x: xL, y: top, win: 0, side: 'l' }, { x: xL, y: bottom }], true, true);
+      path(-1, [{ x: xR, y: top, win: 0, side: 'r' }, { x: xR, y: bottom }], true, true);
+    }
     for (let k = 0; k < N - 1; k++) {
-      const left = k === 0 ? c[0].left - r.left + 18 : g[k - 1] + W / 2 + GAP;
-      const right = k + 1 === N - 1 ? c[N - 1].right - r.left - 18 : g[k + 1] - W / 2 - GAP;
+      const first = k === 0, last = k + 1 === N - 1;
+      const left = first ? xL - W / 2 : g[k - 1] + W / 2 + GAP;
+      const right = last ? xR + W / 2 : g[k + 1] - W / 2 - GAP;
       const x = g[k] - W / 2;
-      svg += `<g><g class="lane">${rect(left, bottom - O, x + W - left, O)}${rect(x, top, W, bottom - top)}${rect(x, top, right - x, O)}</g></g>`;
-      // The dot path: from the far end of window k's bottom band, to the gutter, up it, to the far end of
-      // window k+1's top band. Scrolling down moves the dots toward its start, the way the text goes.
-      const x0 = left + END, x1 = right - END, yb = bottom - O / 2, yt = top + O / 2;
-      const len1 = g[k] - x0, len2 = yb - yt, len3 = x1 - g[k];
-      geo.push({ k, top, bottom, g: g[k], x0, yb, yt, len1, len2, P: len1 + len2 + len3, start: prev[k]?.start ?? 0 });
+      svg += `<g><g class="lane">${first ? edgeL() : ''}${rect(left, bottom - O, x + W - left, O)}${rect(x, top, W, bottom - top)}${rect(x, top, right - x, O)}${last ? edgeR() : ''}</g></g>`;
+      // The dot path runs the way the text runs back when you scroll down: from the far end of column k's bottom
+      // band (or from the top of the left edge), to the gutter, up it, to the far end of column k+1's top band (or
+      // down the right edge). Scrolling down moves the dots toward its start: up the edges, down the gutters.
+      const pts = [];
+      if (first) pts.push({ x: xL, y: top, win: 0, side: 'l' }, { x: xL, y: yb, win: 0 });
+      else pts.push({ x: left + END, y: yb, win: k });
+      pts.push({ x: g[k], y: yb, win: k }, { x: g[k], y: yt, win: k + 1 });
+      if (last) pts.push({ x: xR, y: yt, win: k + 1, side: 'r' }, { x: xR, y: bottom });
+      else pts.push({ x: right - END, y: yt });
+      path(k, pts, first, last);
     }
     rib.innerHTML = svg;
-    lanes = [...rib.children];
+    lanes = [...rib.querySelectorAll(':scope > g')].slice(0, Math.max(0, N - 1));
+    geo.forEach(G => G.lane = G.k >= 0 ? lanes[G.k] : rib.querySelector(':scope > g'));
+    edgeEls = { l: rib.querySelector('.edge[data-side="l"]'), r: rib.querySelector('.edge[data-side="r"]') };
+    edgeEls.l.v = edgeEls.r.v = undefined;
     top0 = top;
     cl = c.map(x => x.left - r.left);
     dpr = devicePixelRatio || 1;
@@ -585,13 +620,28 @@ const R = (() => {
       if (p < 1) busy = true;
       // Draining (end of the document) and threading in both show the ribbon from the bottom up.
       G.cut = Math.max(1 - (drain[k] ?? 1), 1 - G.reveal);
-      if (lanes[k] && lanes[k].cut !== G.cut) { lanes[k].cut = G.cut; lanes[k].style.clipPath = `inset(${G.cut * 100}% 0 0 0)`; }
+      if (G.lane && G.lane.cut !== G.cut) { G.lane.cut = G.cut; G.lane.style.clipPath = `inset(${G.cut * 100}% 0 0 0)`; }
     });
     drawDots();
     if (busy) kick();
   }
-  // Each dot: bigger in the gutter, ¾ of that size in the bands, changing smoothly through the corners;
-  // fading in and out at the ends of the path; and in the bands, nearly invisible where text lies under it.
+  // Each dot: bigger in the channels, ¾ of that size in the bands, changing smoothly through the corners; fading in
+  // and out at the ends of the path (over OPEN at an open edge); in the bands, nearly invisible where text lies under
+  // it; and on an edge, as present as the text it carries (see `edgeV`).
+  // The two edges are the way in and the way out, and look it. On the right edge, where the text arrives from below,
+  // a dot grows from a point into a full dot as it rises; on the left edge, where it leaves at the top, it shrinks
+  // back to a point. While the text moves, an edge dot leaves a short trail of fading echoes behind it, longer the
+  // faster the text goes, so the direction shows; at rest (and with reduced motion) the trail is gone.
+  // The ink at an alpha, for the trails' fades (a fade to plain transparent would darken on the way).
+  let inkRGB = null, inkFor = '';
+  function inkA(alpha) {
+    if (inkFor !== ink) {
+      inkFor = ink;
+      const m = /^#?([0-9a-f]{6})$/i.exec(ink.trim()), n = m ? parseInt(m[1], 16) : 0x5aa9ff;
+      inkRGB = [n >> 16, (n >> 8) & 255, n & 255];
+    }
+    return `rgba(${inkRGB[0]}, ${inkRGB[1]}, ${inkRGB[2]}, ${alpha})`;
+  }
   function drawDots() {
     cx.setTransform(dpr, 0, 0, dpr, 0, 0);
     cx.clearRect(0, 0, cv.width, cv.height);
@@ -600,20 +650,41 @@ const R = (() => {
     for (const G of geo) {
       const v = drain[G.k] ?? 1;
       if (v <= 0) continue;
-      const cutY = G.top + G.cut * (G.bottom - G.top);
+      const cutY = G.top + G.cut * (G.bottom - G.top), legs = G.legs;
+      let i = 0;
       for (let u = base; u < G.P; u += GAP_DOT) {
-        let x, y, off;
-        if (u < G.len1) { x = G.x0 + u; y = G.yb; off = G.len1 - u; }
-        else if (u < G.len1 + G.len2) { x = G.g; y = G.yb - (u - G.len1); off = 0; }
-        else { x = G.g + (u - G.len1 - G.len2); y = G.yt; off = u - G.len1 - G.len2; }
+        while (i < legs.length - 1 && u >= legs[i].u0 + legs[i].len) i++;
+        const L0 = legs[i], f = (u - L0.u0) / (L0.len || 1);
+        const x = L0.a.x + (L0.b.x - L0.a.x) * f, y = L0.a.y + (L0.b.y - L0.a.y) * f;
         if (y < cutY) continue;
-        const inGutter = 1 - smooth(0, 48, off);
-        let a = glow * v * smooth(0, 60, u) * smooth(0, 60, G.P - u);
-        if (inGutter < 1) a *= inGutter + (1 - inGutter) * clearOfText(u < G.len1 ? G.k : G.k + 1, x, y);
+        // How far a band dot is from the channel it turns into (the size and the text fade follow it).
+        let off = 0;
+        if (!L0.up) off = Math.min(legs[i - 1]?.up ? u - L0.u0 : Infinity, legs[i + 1]?.up ? L0.u0 + L0.len - u : Infinity);
+        const inChannel = L0.up ? 1 : 1 - smooth(0, 48, off);
+        let a = glow * v * smooth(0, G.open0 ? OPEN : 60, u) * smooth(0, G.open1 ? OPEN : 60, G.P - u);
+        if (L0.side) a *= edgeV[L0.side];
+        else if (G.open0 && i === 1) a *= 1 - (1 - edgeV.l) * (1 - smooth(0, 60, u - L0.u0));  // the band ends here when the left edge is away
+        else if (G.open1 && i === legs.length - 2) a *= 1 - (1 - edgeV.r) * (1 - smooth(0, 60, L0.u0 + L0.len - u));
+        if (inChannel < 1) a *= inChannel + (1 - inChannel) * clearOfText(L0.win, x, y);
         if (a < .01) continue;
+        let rad = size * (.75 + .25 * inChannel) / 2;  // band dots are ¾ of the channel size
+        if (L0.side) {
+          // From the open end of the edge (its bottom on the right, its top on the left) to the corner: 0 to 1.
+          const along = Math.min(1, (L0.side === 'r' ? L0.u0 + L0.len - u : u - L0.u0) / (L0.len * .55));
+          rad *= .15 + .85 * smooth(0, 1, along);
+          const tail = Math.min(20, Math.abs(dotVel) * .065);  // px; 20 at the top speed
+          if (tail > 1.5) {
+            const y1 = y + (dotVel > 0 ? tail : -tail);  // scrolling down, the dots rise: the trail hangs below them
+            const fade = cx.createLinearGradient(x, y, x, y1);
+            fade.addColorStop(0, inkA(.55)); fade.addColorStop(1, inkA(0));
+            cx.globalAlpha = a;
+            cx.strokeStyle = fade; cx.lineWidth = rad * 1.6; cx.lineCap = 'round';
+            cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x, y1); cx.stroke();
+          }
+        }
         cx.globalAlpha = a;
         cx.beginPath();
-        cx.arc(x, y, size * (.75 + .25 * inGutter) / 2, 0, 6.2832);  // band dots are ¾ of the gutter size
+        cx.arc(x, y, rad, 0, 6.2832);
         cx.fill();
       }
     }
@@ -671,6 +742,13 @@ const R = (() => {
         if (lanes[k].v !== v) { lanes[k].v = v; lanes[k].style.opacity = v; lanes[k].style.visibility = v ? '' : 'hidden'; }
       }
     });
+    // The edges carry as much as there is beyond them: the left one the text above the first column, the right one
+    // the text below the last; each is full once that is more than about half a column, and gone when it is none.
+    edgeV = { l: Math.min(1, Math.max(0, s / (H * .6))), r: Math.min(1, Math.max(0, (T - s - span()) / (H * .6))) };
+    for (const side of ['l', 'r']) {
+      const el = edgeEls[side], v = Math.round(edgeV[side] * 100) / 100;
+      if (el && el.v !== v) { el.v = v; el.style.opacity = v; }
+    }
     kick();
     if (bar.hidden !== (T <= H)) bar.hidden = T <= H;
     thumb.style.transform = `translateY(${s / T * innerHeight}px)`;  // composite only; height changes only near the end
