@@ -463,7 +463,7 @@ const R = (() => {
   // edges: up the right edge of the last column, where the text comes in from below, and up the left edge of the
   // first column, where it goes out at the top. Each joins the band it meets, so the dots run through the corner;
   // their open ends fade out of the page. Bands stop short of the neighbouring channels, so no two ribbons overlap.
-  let geo = [], cl = [], top0 = 0, dpr = 1, ink = '#5aa9ff', edgeEls = {}, edgeV = { l: 0, r: 0 };
+  let geo = [], cl = [], mids = [], top0 = 0, dpr = 1, ink = '#5aa9ff', edgeEls = {}, edgeV = { l: 0, r: 0 };
   const OPEN = 120;  // how far the open end of an edge fades, in the tint and in the dots
   function ribbons() {
     const r = root.getBoundingClientRect(), c = clips.map(x => x.getBoundingClientRect());
@@ -521,6 +521,7 @@ const R = (() => {
     edgeEls.l.v = edgeEls.r.v = undefined;
     top0 = top;
     cl = c.map(x => x.left - r.left);
+    mids = c.map(x => (x.left + x.right) / 2 - r.left);
     dpr = devicePixelRatio || 1;
     cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
     cv.style.width = r.width + 'px'; cv.style.height = r.height + 'px';
@@ -677,6 +678,12 @@ const R = (() => {
         if (L0.side) a *= edgeV[L0.side];
         else if (G.open0 && i === 1) a *= 1 - (1 - edgeV.l) * (1 - smooth(0, 60, u - L0.u0));  // the band ends here when the left edge is away
         else if (G.open1 && i === legs.length - 2) a *= 1 - (1 - edgeV.r) * (1 - smooth(0, 60, L0.u0 + L0.len - u));
+        // In a middle column the bands only hand the text over: their dots fade out by the middle of the column, so
+        // each band reads as leaving one gutter or arriving from it. The first and last columns' bands run on to the edges.
+        if (!L0.up && L0.win > 0 && L0.win < N - 1) {
+          const gx = legs[i + 1]?.up ? L0.b.x : L0.a.x, half = Math.abs(mids[L0.win] - gx) || 1;
+          a *= 1 - smooth(.3, 1, Math.abs(x - gx) / half);
+        }
         if (inChannel < 1) a *= inChannel + (1 - inChannel) * clearOfText(L0.win, x, y);
         if (a < .01) continue;
         let rad = size * (.75 + .25 * inChannel) / 2;  // band dots are ¾ of the channel size
