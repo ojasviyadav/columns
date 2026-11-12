@@ -73,6 +73,7 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     let pane = ReaderPane()             // what this tab shows beside the sidebar: its bars and its page
     let uid = UUID().uuidString                 // names the tab in a drag between windows
     private(set) var tabName = "", tabTip: String?, monogram = ""  // what the sidebar shows of this tab
+    private(set) var folder: String?  // the folders that tell two files of the same name apart
     private var settingsMade = false
     var settingsOpen: Bool { settingsMade && settings.isShown }
     weak var focus: NSView?  // where the keyboard was when another tab came to show
@@ -148,24 +149,31 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
                 let others = twins.filter { $0 !== r }.map { Array($0.url.deletingLastPathComponent().pathComponents.reversed()) }
                 var k = 1
                 while k < mine.count, others.contains(where: { Array($0.prefix(k)) == Array(mine.prefix(k)) }) { k += 1 }
-                r.tabName = "\(r.title) — \(mine.prefix(k).reversed().joined(separator: "/"))"
-            } else { r.tabName = r.title }
+                r.folder = mine.prefix(k).reversed().joined(separator: "/")
+                r.tabName = "\(r.title) — \(r.folder!)"
+            } else { r.tabName = r.title; r.folder = nil }
             let path = r.url == welcome ? nil : (r.url.path as NSString).abbreviatingWithTildeInPath
             r.tabTip = path.map { "\(r.title)\n\($0)" } ?? r.title
             r.monogram = monogram(for: r.title)
         }
-        for h in ReaderHost.all {
-            var used = Set<String>()
-            for r in h.tabs {
-                if used.contains(r.monogram.lowercased()) {
-                    let stem = ((r.title as NSString).deletingPathExtension as String).filter { $0.isLetter || $0.isNumber }
-                    if let first = stem.first, let alt = stem.dropFirst().dropFirst().lazy.map({ first.uppercased() + String($0).lowercased() }).first(where: { !used.contains($0.lowercased()) }) { r.monogram = alt }
-                }
-                used.insert(r.monogram.lowercased())
-            }
-        }
         ReaderHost.all.forEach { $0.refreshTitle() }
         NotificationCenter.default.post(name: .tabsChanged, object: nil)
+    }
+    // The tiles of a window's tabs, in order: no two alike (ignoring case). A later tab whose two letters are taken
+    // takes its first letter and the next one of its name that tells it apart (README → RE, then Ra), or a number.
+    static func tiles(_ tabs: [Reader]) -> [String] {
+        var used = Set<String>()
+        return tabs.map { r in
+            var t = r.monogram
+            if used.contains(t.lowercased()) {
+                let stem = ((r.title as NSString).deletingPathExtension as String).filter { $0.isLetter || $0.isNumber }
+                let first = stem.first.map { String($0).uppercased() } ?? "?"
+                let letters = stem.dropFirst().dropFirst().map { first + String($0).lowercased() }
+                t = (letters + (2...99).map { first + String($0) }).first { !used.contains($0.lowercased()) } ?? t
+            }
+            used.insert(t.lowercased())
+            return t
+        }
     }
     // Two letters for a tab in the narrow sidebar: README → RE, IDEA → ID, ownership → Ow.
     static func monogram(for title: String) -> String {
@@ -181,7 +189,10 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     static func rememberClosedWindow(_ tabs: [Reader], showing: Reader?) {
         let urls = tabs.map(\.url).filter { $0 != welcome }
         guard !urls.isEmpty, !AppDelegate.quitting else { return }
-        closed.removeAll { c in c.urls.contains(where: urls.contains) }
+        closed = closed.compactMap { c in
+            let rest = c.urls.filter { !urls.contains($0) }
+            return rest.isEmpty ? nil : Closed(urls: rest, showing: rest.contains { $0 == c.showing } ? c.showing : nil, host: c.host, index: c.index, window: c.window)
+        }
         closed.append(Closed(urls: urls, showing: showing?.url, host: nil, index: 0, window: true))
     }
 
@@ -610,10 +621,11 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
             case "sidebarWidth": h.selected?.toggleSidebarWidth(nil)
             case "sidebarToggle": h.sidebarModel.toggle()
             case "peek": h.sidebarModel.peek()
+            case "find": h.selected?.showFind(nil)
             case "tiles":  // the front window's tabs as the sidebar names them: name=tile
                 if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
                     let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
-                    try? (old + "tiles " + h.tabs.map { "\($0.tabName)=\($0.monogram)" }.joined(separator: ",") + "\n").write(toFile: log, atomically: true, encoding: .utf8)
+                    try? (old + "tiles " + zip(h.tabs, Reader.tiles(h.tabs)).map { "\($0.0.tabName)=\($0.1)" }.joined(separator: ",") + "\n").write(toFile: log, atomically: true, encoding: .utf8)
                 }
             case "state":  // every window's tabs and the one that shows, for the checks
                 if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
@@ -742,6 +754,13 @@ final class ReaderWindow: NSWindow {
         default: return super.validateMenuItem(item)
         }
     }
+    #if CHECK_COPY  // the check copy never minimizes: the Dock is on the user's display; the checks read this line instead
+    override func miniaturize(_ sender: Any?) {
+        guard let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] else { return }
+        let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+        try? (old + "minimize\n").write(toFile: log, atomically: true, encoding: .utf8)
+    }
+    #endif
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .leftMouseDown, event.clickCount == 2, inTitleBar(event.locationInWindow) else { return super.sendEvent(event) }
         titleDoubleClick()
@@ -820,7 +839,10 @@ final class FindBar: NSTitlebarAccessoryViewController, NSSearchFieldDelegate {
         layoutAttribute = .bottom
         field.placeholderString = "Find in document"
         field.delegate = self
-        field.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        field.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        field.widthAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
+        let wide = field.widthAnchor.constraint(equalToConstant: 260); wide.priority = .defaultLow; wide.isActive = true
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         arrows.target = self
         arrows.action = #selector(step(_:))
         arrows.isEnabled = false
@@ -832,6 +854,9 @@ final class FindBar: NSTitlebarAccessoryViewController, NSSearchFieldDelegate {
         let bar = NSStackView()
         [field, arrows, count].forEach { bar.addView($0, in: .leading) }
         bar.addView(done, in: .trailing)
+        bar.setVisibilityPriority(.detachOnlyIfNecessary, for: count)
+        bar.setVisibilityPriority(NSStackView.VisibilityPriority(rawValue: 600), for: done)
+        bar.setClippingResistancePriority(.defaultLow, for: .horizontal)
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
         bar.frame = NSRect(x: 0, y: 0, width: 600, height: 38)
@@ -1015,44 +1040,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     // File > Reopen Closed Tab: the tab closed last, back where it was (its window and its place in the list, if the
     // window is still open). A file that is gone since is named, not skipped.
     @objc func reopenClosedTab(_ sender: Any?) {
-        guard let last = Reader.closed.last else { return }
+        guard let last = Reader.closed.popLast() else { return }
         let here = last.urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         let gone = last.urls.filter { !here.contains($0) }
-        if here.isEmpty {  // nothing to open: say which file, and offer to find it; the record stays until found or skipped
-            let alert = NSAlert()
-            alert.messageText = gone.count == 1 ? "“\(gone[0].lastPathComponent)” can’t be reopened" : "These \(gone.count) files can’t be reopened"
-            alert.informativeText = "\(AppDelegate.describe(gone.map(\.path))) moved or deleted after you closed it. Find it to open it from where it is now, or skip it."
-            alert.addButton(withTitle: "Find It…")
-            alert.addButton(withTitle: "Skip")
-            let answer = { (r: NSApplication.ModalResponse) in
-                if r == .alertSecondButtonReturn { Reader.closed.removeAll { $0.urls == last.urls }; return }
-                let panel = AppDelegate.openPanel()
-                panel.directoryURL = gone[0].deletingLastPathComponent()
-                guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-                Reader.closed.removeAll { $0.urls == last.urls }
-                if last.window { let h = ReaderHost(alone: false); panel.urls.forEach { _ = Reader.reader(showing: $0, into: h) } }
-                else { panel.urls.forEach(Reader.show) }
-            }
-            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) { answer($0) } } else { answer(alert.runModal()) }
-            return
+        var into = last.window ? nil : last.host.flatMap { h in ReaderHost.all.contains { $0 === h } ? h : nil }
+        if !here.isEmpty { into = AppDelegate.bringBack(here, record: last, into: into) }
+        guard !gone.isEmpty else { return }
+        // What could not come back stays to be found: in the window the others came back to, or where it was.
+        let rest = Reader.Closed(urls: gone, showing: nil, host: into, index: into?.tabs.count ?? last.index, window: into == nil && last.window)
+        Reader.closed.append(rest)
+        let alert = NSAlert()
+        alert.messageText = gone.count == 1 ? "“\(gone[0].lastPathComponent)” can’t be reopened" : "\(gone.count) files can’t be reopened"
+        alert.informativeText = "\(AppDelegate.describe(gone.map(\.path))) moved or deleted after you closed it. Find it to open it from where it is now, or skip it."
+        alert.addButton(withTitle: "Find It…")
+        alert.addButton(withTitle: "Skip")
+        let answer = { (r: NSApplication.ModalResponse) in
+            if r == .alertSecondButtonReturn { Reader.closed.removeAll { $0.urls == gone }; return }
+            let panel = AppDelegate.openPanel()
+            panel.directoryURL = gone[0].deletingLastPathComponent()
+            guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }  // cancelled: ⇧⌘T offers it again
+            Reader.closed.removeAll { $0.urls == gone }
+            AppDelegate.bringBack(panel.urls, record: rest, into: rest.host.flatMap { h in ReaderHost.all.contains { $0 === h } ? h : nil })
         }
-        Reader.closed.removeLast()
-        if last.window {  // the window comes back as it was: its files in order, showing the one that showed
+        if let w = (into ?? ReaderHost.key)?.window { alert.beginSheetModal(for: w) { answer($0) } } else { answer(alert.runModal()) }
+    }
+    // Files of a closed record back where it says: a window of their own for a closed window, otherwise their window
+    // and their place in its list (the front window if theirs has closed). Returns the window they are in.
+    @discardableResult static func bringBack(_ urls: [URL], record: Reader.Closed, into: ReaderHost?) -> ReaderHost {
+        if record.window && into == nil {
             let h = ReaderHost(alone: false)
-            here.forEach { _ = Reader.reader(showing: $0, into: h) }
-            if let s = h.tabs.first(where: { $0.url == last.showing }) ?? h.tabs.first { h.select(s) }
+            urls.forEach { _ = Reader.reader(showing: $0, into: h) }
+            if let s = h.tabs.first(where: { $0.url == record.showing }) ?? h.tabs.first { h.select(s) }
             h.window.makeKeyAndOrderFront(nil)
-        } else if let h = last.host, ReaderHost.all.contains(where: { $0 === h }) {
-            let r = Reader.reader(showing: here[0], into: h)
-            h.place(r, at: last.index)
-            h.select(r)
-        } else { Reader.show(here[0]) }
-        if !gone.isEmpty {
-            let alert = NSAlert()
-            alert.messageText = gone.count == 1 ? "“\(gone[0].lastPathComponent)” wasn’t reopened" : "\(gone.count) files weren’t reopened"
-            alert.informativeText = "\(AppDelegate.describe(gone.map(\.path))) moved or deleted after the window closed. Choose File > Open… to open it from where it is now."
-            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+            return h
         }
+        let readers = urls.map { Reader.reader(showing: $0, into: into) }
+        let h = readers[0].host!
+        if into != nil { for (i, r) in readers.enumerated() { h.place(r, at: record.index + i) } }
+        h.select(readers[0])
+        h.window.makeKeyAndOrderFront(nil)
+        return h
     }
     // Files named for an alert: each by its name and its folder, once.
     static func describe(_ paths: [String]) -> String {
@@ -1109,8 +1136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     // File > Open Recent, kept by the system's recent-documents list (the Dock menu shows the same files).
     private func fillRecent(_ menu: NSMenu) {
         let recent = NSDocumentController.shared.recentDocumentURLs
+        let twins = Dictionary(grouping: recent, by: \.lastPathComponent).filter { $0.value.count > 1 }
         for url in recent {
-            let item = NSMenuItem(title: url.lastPathComponent, action: #selector(openRecent(_:)), keyEquivalent: "")
+            let folder = (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+            let item = NSMenuItem(title: twins[url.lastPathComponent] == nil ? url.lastPathComponent : "\(url.lastPathComponent) — \(folder)", action: #selector(openRecent(_:)), keyEquivalent: "")
             item.representedObject = url
             item.toolTip = url.path
             let icon = NSWorkspace.shared.icon(forFile: url.path)

@@ -82,6 +82,7 @@
 
   /* The text keeps a reading measure (about 75 characters) however wide a column is, centred in it. */
   .md { display: flow-root; max-width: 42em; margin-inline: auto; padding: 0 46px 2em; will-change: transform; overflow-wrap: break-word; }
+  .md :is(h1, h2, h3) { -webkit-hyphens: auto; hyphens: auto; }  /* a long word in a narrow column breaks with a hyphen */
   .md > :first-child, .md > .sec:first-child > :first-child { margin-top: 0; }
 
   /* Sections: each heading owns everything up to the next heading of its level or higher. A chevron in the
@@ -160,6 +161,7 @@ const R = (() => {
   // s = document offset at the top of window 1; window k starts at s + k * step.
   // step = window height minus two lines: each seam dissolves one line in each window,
   // so every line is fully clear in one of the two windows.
+  let ringEl = null;  // the place that has the keyboard, when it was reached by the keyboard
   let want = 3, N = 3, s = 0, html = '', plain = '', boldStarts = false, arts = [], clips = [], lanes = [], H = 0, L = 24, O = 48, T = 0, step = 1, raf = 0, still = 0;
 
   // The page's state machines. Each has one named state, changed only through `go`, written as data-<machine> on the
@@ -431,6 +433,7 @@ const R = (() => {
   const refit = () => arts.length && fit(want) !== N ? hold(() => { N = fit(want); build(); applyFolds(); }) : hold();
   const ro = new ResizeObserver(() => { if (!folding) refit(); });
   function build() {
+    const had = focusKey();
     root.replaceChildren(); arts = []; clips = [];
     root.style.setProperty('--n', N);
     for (let k = 0; k < N; k++) {
@@ -445,7 +448,15 @@ const R = (() => {
     }
     ro.disconnect(); ro.observe(arts[0]);
     if (query) collect();
+    if (had) requestAnimationFrame(() => {
+      if (document.activeElement && document.activeElement !== document.body) return;  // focus went elsewhere since
+      const el = [...arts[0].querySelectorAll('.fold, a')].find(x => placeKey(x) === had);
+      el?.focus({ preventScroll: true });
+    });
   }
+  // A focusable place in the document, named so that it can be found again in a new copy of it.
+  function placeKey(x) { return (x.closest('[id]')?.id ?? '') + '|' + (x.classList.contains('fold') ? 'fold' : x.getAttribute('href')) + '|' + x.textContent; }
+  function focusKey() { const a = document.activeElement?.closest?.('.fold, a'); return a && arts[0]?.contains(a) ? placeKey(a) : null; }
   function layout() {
     if (!arts.length) return;
     H = clips[0].clientHeight;
@@ -783,6 +794,7 @@ const R = (() => {
     const th = Math.round(Math.max(24, Math.min(span(), T - s) / T * innerHeight));
     if (thumb.h !== th) { thumb.h = th; thumb.style.height = th + 'px'; }
     pin();
+    if (ringEl) ring();
     tell();
   }
   // What the app's menus and find bar need to know, sent a moment after things settle; the place in the file is
@@ -852,21 +864,27 @@ const R = (() => {
   // Keyboard focus is drawn by the page itself (WebKit does not always count Tab and Option-Tab as :focus-visible):
   // Tab sets it, a press of the mouse clears it.
   let byKey = false;
+  // The ring of the focused place: on the first copy, and on the copy of the column that shows it now.
+  function ring() {
+    root.querySelectorAll('.focus-twin').forEach(x => x.classList.remove('focus-twin'));
+    if (!ringEl || !arts[0]?.contains(ringEl)) return;
+    const k = Math.min(N - 1, Math.max(0, Math.floor((docY(ringEl) - s) / step)));
+    if (k) arts[k].querySelectorAll('.fold, a')[[...arts[0].querySelectorAll('.fold, a')].indexOf(ringEl)]?.classList.add('focus-twin');
+  }
   addEventListener('keydown', e => { if (e.key === 'Tab') byKey = true; }, true);
   addEventListener('mousedown', () => { byKey = false; }, true);
   addEventListener('focusin', e => {
     const el = e.target.closest?.('.fold, a');
     clips.forEach(c => { if (c.scrollTop) c.scrollTop = 0; });  // the browser's own scroll-to-focus would shift a column
     root.querySelectorAll('.focus-twin, .key-focus').forEach(x => x.classList.remove('focus-twin', 'key-focus'));
+    ringEl = null;
     if (!el || !arts[0]?.contains(el) || !(byKey || el.matches(':focus-visible'))) return;
-    el.classList.add('key-focus');
+    el.classList.add('key-focus'); ringEl = el;
     const y = docY(el);
-    if (y < s || y + L > s + span()) return glide(y - L, true);
-    // The first copy shows in the first column only; the column that shows this place draws the ring on its copy.
-    const k = Math.min(N - 1, Math.max(0, Math.floor((y - s) / step)));
-    if (k) { const all = [...arts[0].querySelectorAll('.fold, a')], twin = arts[k].querySelectorAll('.fold, a')[all.indexOf(el)]; twin?.classList.add('focus-twin'); }
+    if (y < s || y + L > s + span()) return glide(y - L, true);  // the glide moves the ring with it
+    ring();
   });
-  addEventListener('focusout', () => root.querySelectorAll('.focus-twin, .key-focus').forEach(x => x.classList.remove('focus-twin', 'key-focus')));
+  addEventListener('focusout', () => { ringEl = null; root.querySelectorAll('.focus-twin, .key-focus').forEach(x => x.classList.remove('focus-twin', 'key-focus')); });
   // Every column holds a copy of the document, so a selection can run from one copy into the next, or over all
   // of them (Select All). Copy maps both ends to the first copy and takes the text between them once.
   function inFirst(node, offset) {

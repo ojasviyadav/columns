@@ -140,11 +140,12 @@ extension Notification.Name {
     }
     func select(_ r: Reader) {
         guard tabs.contains(where: { $0 === r }) else { return }
-        if let old = selected, old !== r { old.focus = focusedView(in: old) }
+        let same = selected === r
+        if let old = selected, !same { old.focus = focusedView(in: old) }
         selected = r
         shell.show(r.pane)
         refreshTitle()
-        if window.isKeyWindow || !window.isVisible { restoreFocus(r) }
+        if !same, window.isKeyWindow || !window.isVisible { restoreFocus(r) }
         changed()
         r.becameVisible()
     }
@@ -427,9 +428,9 @@ final class TabSidebar: NSView, NSDraggingSource {
         let list = tabs, selected = host?.selected
         while rows.count < list.count { let r = TabRow(kind: .tab); rows.append(r); listDoc.addSubview(r, positioned: .below, relativeTo: insertion) }
         while rows.count > list.count { rows.removeLast().removeFromSuperview() }
-        for (row, r) in zip(rows, list) {
+        for (row, (r, tile)) in zip(rows, zip(list, Reader.tiles(list))) {
             row.reader = r
-            row.configure(title: r.tabName, monogram: r.monogram, tip: r.tabTip, selected: r === selected, names: names, sidebar: self)
+            row.configure(title: r.title, folder: r.folder, monogram: tile, tip: r.tabTip, selected: r === selected, names: names, sidebar: self)
         }
         newTab.configureAction(symbol: "plus", title: "New Tab", shortcut: "⌘T", names: names, tip: "Open a file in a new tab (⌘T)")
         settings.configureAction(symbol: nil, title: "Reading settings", shortcut: "⌘,", names: names, tip: "Reading settings: columns, text size, theme and font (⌘,)")
@@ -598,10 +599,10 @@ final class TabRow: NSView {
     required init?(coder: NSCoder) { nil }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    func configure(title: String, monogram: String, tip: String?, selected: Bool, names: Bool, sidebar: TabSidebar) {
+    func configure(title: String, folder: String?, monogram: String, tip: String?, selected: Bool, names: Bool, sidebar: TabSidebar) {
         self.selected = selected; self.names = names; self.sidebar = sidebar
-        name.stringValue = title; tile.text = monogram; toolTip = tip
-        setAccessibilityRole(.radioButton); setAccessibilityLabel(title); setAccessibilityValue(selected ? 1 : 0)
+        name.stringValue = title; hint.stringValue = folder ?? ""; tile.text = monogram; toolTip = tip
+        setAccessibilityRole(.radioButton); setAccessibilityLabel(folder.map { "\(title), \($0)" } ?? title); setAccessibilityValue(selected ? 1 : 0)
         updateLook(); needsLayout = true
     }
     func configureAction(symbol: String?, title: String, shortcut: String?, names: Bool, tip: String) {
@@ -627,7 +628,7 @@ final class TabRow: NSView {
         }
         let mono: CGFloat = kind == .action ? 14 : (names ? 10.5 : 14)
         tile.font = kind == .action ? NSFont(name: "Libron-Regular", size: 15) ?? .systemFont(ofSize: 14, weight: .medium) : .systemFont(ofSize: mono, weight: .semibold)
-        name.isHidden = !names; hint.isHidden = !names || kind == .tab
+        name.isHidden = !names; hint.isHidden = !names || hint.stringValue.isEmpty
         close.isHidden = kind != .tab || !(hover || (selected && names))
     }
     override func layout() {
@@ -639,9 +640,10 @@ final class TabRow: NSView {
             icon.frame = NSRect(x: 8, y: (h - 18) / 2, width: t, height: 18)
             let right = bounds.width - (kind == .tab ? 30 : 8)
             hint.sizeToFit()
-            hint.frame = NSRect(x: right - hint.frame.width, y: (h - hint.frame.height) / 2, width: hint.frame.width, height: hint.frame.height)
+            let hw = kind == .tab ? min(hint.frame.width, (right - 39) * 0.45) : hint.frame.width  // a twin's folder keeps up to almost half
+            hint.frame = NSRect(x: right - hw, y: (h - hint.frame.height) / 2, width: hw, height: hint.frame.height)
             name.sizeToFit()
-            let nameRight = kind == .tab ? right : hint.frame.minX - 6
+            let nameRight = hint.isHidden ? right : hint.frame.minX - 6
             name.frame = NSRect(x: 39, y: (h - name.frame.height) / 2, width: max(0, nameRight - 39), height: name.frame.height)
             close.frame = NSRect(x: bounds.width - 26, y: (h - 18) / 2, width: 18, height: 18)
         } else {

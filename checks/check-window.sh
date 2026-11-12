@@ -13,7 +13,7 @@ run() {  # run <script text>: runs it in the front page and prints what it retur
   for i in {1..40}; do sleep 0.5; [[ -f $T/eval.js.out ]] && break; done; cat $T/eval.js.out 2>/dev/null
 }
 defaults write $id sidebar pinned  # each run starts from the same sidebar, whatever an earlier run left
-COLUMNS_EVAL=$T/eval.js COLUMNS_LOG=$T/js.log checks/launch-check.sh $T/long.md; sleep 4
+COLUMNS_EVAL=$T/eval.js COLUMNS_LOG=$T/js.log checks/launch-check.sh $T/long.md || exit 3; sleep 4
 se "set size of window 1 to {900, 600}" >/dev/null; sleep 1
 small=$(frame)
 # Zoom as a title bar double-click does it (performZoom), without bringing Columns to the front.
@@ -32,10 +32,10 @@ dblchecks() {  # dblchecks <sidebar state>: the title bar is the sidebar's top w
   ok "title bar double-click ($1) again: back" '[[ $d2 == $small ]]' "$small -> $d1 -> $d2"
   defaults write $id AppleActionOnDoubleClick None; sleep 0.5; dbl; d3=$(frame)
   ok "title bar double-click ($1), set to No Action: nothing" '[[ $d3 == $small ]]' "$small -> $d3"
-  defaults write $id AppleActionOnDoubleClick Minimize; sleep 0.5; dbl
-  mini=$(se "get value of attribute \"AXMinimized\" of window 1")
-  ok "title bar double-click ($1), set to Minimize: minimized" '[[ $mini == true ]]' "minimized: $mini"
-  se "set value of attribute \"AXMinimized\" of window 1 to false" >/dev/null; sleep 1
+  # The check copy records a minimize instead of doing it: a minimized window would go to the Dock, on the user's display.
+  defaults write $id AppleActionOnDoubleClick Minimize; sleep 0.5; before=$(grep -c '^minimize$' $T/js.log); dbl
+  after=$(grep -c '^minimize$' $T/js.log)
+  ok "title bar double-click ($1), set to Minimize: minimized" '[[ $after -gt $before ]]' "minimize asked: $before -> $after"
   defaults delete $id AppleActionOnDoubleClick
 }
 dblchecks "sidebar pinned"
@@ -75,6 +75,8 @@ mkdir -p $T/a $T/b; cp checks/fixtures/short.md $T/a/README.md; cp checks/fixtur
 open -g -a "$PWD/build/Columns Check.app" $T/a/README.md; sleep 2.5; act moveTab
 open -g -a "$PWD/build/Columns Check.app" $T/b/README.md; sleep 2.5
 open -g -a "$PWD/build/Columns Check.app" $T/b/release.md; sleep 2.5
+cp checks/fixtures/short.md $T/a/A.md; cp checks/fixtures/short.md $T/b/A.md
+open -g -a "$PWD/build/Columns Check.app" $T/a/A.md; sleep 2.5; open -g -a "$PWD/build/Columns Check.app" $T/b/A.md; sleep 2.5
 act tiles; tiles=$(grep '^tiles ' $T/js.log | tail -1 | cut -c7-)
 mono=$(print -r -- $tiles | tr ',' '\n' | sed 's/.*=//' | tr 'A-Z' 'a-z' | sort | uniq -d)
 ok "twin names show their folders" '[[ $tiles == *"README.md — a"* && $tiles == *"README.md — b"* ]]' "$tiles"

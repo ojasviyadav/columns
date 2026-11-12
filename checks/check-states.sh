@@ -10,7 +10,7 @@ run() {  # run <script text>: runs it in the front page and prints what it retur
   [[ -s $T/eval.js.out ]] || { echo "FAIL no answer from the page"; fail=1; return; }
   cat $T/eval.js.out; echo; grep -q "FAIL\|ERROR" $T/eval.js.out && fail=1
 }
-open_file() { COLUMNS_LOG=$T/js.log COLUMNS_EVAL=$T/eval.js checks/launch-check.sh "$1"; sleep 4; }
+open_file() { COLUMNS_LOG=$T/js.log COLUMNS_EVAL=$T/eval.js checks/launch-check.sh "$1" || exit 3; sleep 4; }
 
 open_file $T/long.md
 run "$(cat checks/states.js)"
@@ -61,6 +61,8 @@ const links = [...arts[0].querySelectorAll('a')], i = links.findIndex((a, j) => 
 dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); links[i].focus(); await new Promise(r => setTimeout(r, 200));
 const twin = [...document.querySelectorAll('.focus-twin')];
 return (links[i].classList.contains('key-focus') && twin.length === 1 && twin[0].closest('.md') === arts[1] ? 'ok   ' : 'FAIL ') + 'keyboard focus in a later column: its copy draws the ring — link ' + (i + 1) + ', rings in copies ' + twin.map(x => arts.indexOf(x.closest('.md'))).join(',');"
+run "const was = document.activeElement.textContent; R.setColumns(2, true); await new Promise(r => setTimeout(r, 700)); const now = document.activeElement;
+return (now.textContent === was && now.classList.contains('key-focus') ? 'ok   ' : 'FAIL ') + 'the columns rebuilt: the keyboard stays on ' + was + ' — now on ' + (now.textContent || now.tagName);"
 run "document.querySelectorAll('.md a')[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.activeElement.blur(); return (document.querySelectorAll('.focus-twin, .key-focus').length === 0 ? 'ok   ' : 'FAIL ') + 'focus leaves: no ring stays';"
 
 [[ -s $T/js.log ]] && { echo "script errors:"; cat $T/js.log; fail=1; }

@@ -11,6 +11,13 @@ name="${APP_NAME:-Columns}"
 app="build/$name.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+# The page's own script must parse (when Node is installed): a syntax error would leave every page blank.
+if command -v node >/dev/null; then
+  js=$(mktemp -t columns-page).js
+  python3 -c 'import re,sys; s=open("Resources/index.html").read(); print(max(re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>", s, re.S), key=len))' > "$js"
+  node --check "$js" || { echo "Resources/index.html: the page script does not parse" >&2; rm -f "$js"; exit 1; }
+  rm -f "$js"
+fi
 flags=(); [[ "${CHECK_COPY:-0}" == "1" ]] && flags=(-D CHECK_COPY)  # the hooks of checks/ exist only in the check copy
 # One app for Apple silicon and Intel Macs: each is compiled on its own, then the two are joined.
 tmp=$(mktemp -d)
