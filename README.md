@@ -14,6 +14,7 @@ editing it in another app), Columns shows the new text at once and marks what ch
 
 ## Features
 
+- Tabs, as in a browser: every file opens as a tab; drag tabs to reorder them, out into a window of their own, or into another window (⌘T, ⌘N, ⇧⌘T, ⇧⌘] and ⇧⌘[).
 - 1 to 6 columns (⌘1 … ⌘6); the default follows the width of your screen. A short document stands in the middle.
 - Sections collapse at their headings; Go to Section lists the outline and marks where you are.
 - Find (⌘F), with every match marked in every column. Back and Forward (⌘[ ⌘]) after a jump.

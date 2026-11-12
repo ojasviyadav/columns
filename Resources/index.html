@@ -478,7 +478,8 @@ const R = (() => {
     let svg = `<defs>
       <linearGradient id="edge-out" gradientUnits="userSpaceOnUse" x1="0" y1="${top}" x2="0" y2="${top + OPEN}"><stop offset="0" stop-color="currentColor" stop-opacity="0"/><stop offset="1" stop-color="currentColor"/></linearGradient>
       <linearGradient id="edge-in" gradientUnits="userSpaceOnUse" x1="0" y1="${bottom - OPEN}" x2="0" y2="${bottom}"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>`;
-    const prev = geo, yb = bottom - O / 2, yt = top + O / 2;
+    // A band is as thick as a channel (one ribbon, one width), along the outer edge of the two lines both columns show.
+    const B = W, prev = geo, yb = bottom - B / 2, yt = top + B / 2;
     geo = [];
     // A dot path is a list of points; each leg knows the column it lies in (for the text under it) and whether it is
     // a channel (upright) or a band, and the edge it belongs to.
@@ -507,8 +508,8 @@ const R = (() => {
       const midOf = i => (c[i].left + c[i].right) / 2 - r.left;
       if (!first) svg += `<defs>${fade('band-b-' + k, g[k], midOf(k))}</defs>`;
       if (!last) svg += `<defs>${fade('band-t-' + k, g[k], midOf(k + 1))}</defs>`;
-      const bottomBand = rect(left, bottom - O, x + W - left, O, first ? '' : ` fill="url(#band-b-${k})"`);
-      const topBand = rect(x, top, right - x, O, last ? '' : ` fill="url(#band-t-${k})"`);
+      const bottomBand = rect(left, bottom - B, x + W - left, B, first ? '' : ` fill="url(#band-b-${k})"`);
+      const topBand = rect(x, top, right - x, B, last ? '' : ` fill="url(#band-t-${k})"`);
       svg += `<g><g class="lane">${first ? edgeL() : ''}${bottomBand}${rect(x, top, W, bottom - top)}${topBand}${last ? edgeR() : ''}</g></g>`;
       // The dot path runs the way the text runs back when you scroll down: from the far end of column k's bottom
       // band (or from the top of the left edge), to the gutter, up it, to the far end of column k+1's top band (or

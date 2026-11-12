@@ -45,16 +45,27 @@ keys=$(run 'R.go("top", true); const y = () => document.querySelector(".md").sty
 dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true })); const b = y();
 dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })); const c = y(); return [a === b, b !== c].join(" ");')
 ok "keys: Shift-arrow left to the system, Option-arrow pages" '[[ $keys == "true true" ]]' "$keys"
-# A new window steps down and right of the front one, which stays where it is.
-se "set position of window 1 to {$(echo $small | cut -d, -f1), $(echo $small | cut -d, -f2)}" >/dev/null; sleep 0.5
+# A second file opens as a tab of the window in front, which stays where it is; the tab bar shows.
 before=$(frame)
 open -g -a "$PWD/build/Columns Check.app" $T/short.md; sleep 3
-count=$(se "count windows"); first=$(se "get {position, size} of window \"long.md\"" | tr -d ' '); second=$(se "get {position, size} of window \"short.md\"" | tr -d ' ')
-ok "a new window leaves the front one where it is" '[[ $first == $before ]]' "$before -> $first"
-ok "a new window opens stepped from it" '[[ $second != $first && $count == 2 ]]' "$first / $second ($count windows)"
-# Closing every window keeps Columns running.
-se "click menu item \"Close\" of menu \"File\" of menu bar 1" >/dev/null; sleep 0.8
-se "click menu item \"Close\" of menu \"File\" of menu bar 1" >/dev/null; sleep 1.5
+tabs() { se 'get title of radio buttons of (first UI element of window 1 whose role is "AXTabGroup")' | sed 's/.*error.*/(no tab bar)/'; }
+ok "a second file opens as a tab" '[[ $(se "count windows") == 1 && $(tabs) == "long.md, short.md" ]]' "$(se 'count windows') windows, tabs: $(tabs)"
+ok "the window stays where it was" '[[ $(frame) == $before ]]' "$before -> $(frame)"
+act() { run "webkit.messageHandlers.act.postMessage('$1'); return '';" >/dev/null; sleep 1.2; }
+act moveTab
+ok "Move Tab to New Window: two windows, each with its tab bar" '[[ $(se "count windows") == 2 && $(tabs) == "short.md" ]]' "$(se 'count windows') windows, front tabs: $(tabs)"
+act merge
+set_tabs() { tabs | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' '; }
+ok "Merge All Windows: one window, both tabs" '[[ $(se "count windows") == 1 && $(set_tabs) == "long.md short.md " ]]' "$(se 'count windows') windows, tabs: $(tabs)"
+selected() { se 'get title of (first radio button of (first UI element of window 1 whose role is "AXTabGroup") whose value is 1)'; }
+shown=$(selected); act previousTab
+ok "Show Previous Tab: the other tab shows" '[[ $(selected) != $shown ]]' "$shown -> $(selected)"
+shown=$(selected); act closeTab
+ok "Close Tab: the tab that showed is closed" '[[ $(se "count windows") == 1 && $(tabs) != *$shown* && $(tabs) != "(no tab bar)" ]]' "closed $shown, tabs: $(tabs)"
+act reopen
+ok "Reopen Closed Tab: it comes back" '[[ $(set_tabs) == "long.md short.md " && $(selected) == $shown ]]' "tabs: $(tabs), showing: $(selected)"
+# Closing the window with all its tabs keeps Columns running.
+act closeWindow; sleep 1
 running=$(pgrep -f "Columns Check.app/Contents/MacOS" | wc -l | tr -d ' ')
 ok "the last window closed: Columns keeps running" '[[ $running -ge 1 ]]' "processes: $running"
 osascript -e "tell application id \"$id\" to quit" 2>/dev/null

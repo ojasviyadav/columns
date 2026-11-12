@@ -26,6 +26,12 @@ A link to a web page opens in your browser. A link to another Markdown file open
 
 To keep a copy, choose **File > Export as PDF…**. The copy is in pages, with every section open.
 
+## Tabs and windows
+
+Every file you open becomes a tab of the window in front, as in a web browser. **File > New Tab…** (⌘T) or the **+** at the end of the tab bar opens another file as a tab; **File > New Window…** (⌘N) opens one in a window of its own.
+
+Drag a tab along the tab bar to reorder it, drag it out of the window to give it a window of its own, or drop it into another window's tab bar to join that window. **File > Reopen Closed Tab** (⇧⌘T) brings back the tab you closed last.
+
 ## Collapse a section
 
 Move the pointer over the page and an arrow shows beside each heading. Click it to collapse that section; click it again to expand it. Hold ⌥ and click to collapse or expand every section at the same level. Columns remembers which sections you collapsed in each file.
@@ -48,6 +54,11 @@ If you rename or move the file, Columns follows it. If it is deleted, Columns ke
 
 | To do this | Press |
 | --- | --- |
+| Open a file in a new tab | ⌘T |
+| Open a file in a new window | ⌘N |
+| Go to the next or previous tab | ⇧⌘] and ⇧⌘[ (or ⌃⇥ and ⌃⇧⇥) |
+| Close the tab, or the whole window | ⌘W and ⇧⌘W |
+| Reopen the tab you closed last | ⇧⌘T |
 | Scroll one screen down or up | Space and ⇧Space |
 | Scroll a few lines | ↓ and ↑ |
 | Go to the beginning or the end | ⌘↑ and ⌘↓ |
