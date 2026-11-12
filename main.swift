@@ -112,7 +112,12 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     static func show(_ url: URL) { _ = reader(showing: url) }
     static func reader(showing url: URL, into host: ReaderHost? = nil, newWindow: Bool = false) -> Reader {
         let same = { (a: URL) in a.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL }
-        if let r = all.first(where: { same($0.url) }) { r.host.select(r); r.window.makeKeyAndOrderFront(nil); return r }
+        if let r = all.first(where: { same($0.url) }) {  // open already: it comes forward, or moves where it was asked for
+            if newWindow { r.host.detach(r).window.makeKeyAndOrderFront(nil) }
+            else if let host, host !== r.host { host.adopt(r, at: host.tabs.count) }
+            else { r.host.select(r); r.window.makeKeyAndOrderFront(nil) }
+            return r
+        }
         let target = newWindow ? nil : host ?? ReaderHost.front
         let h = target ?? ReaderHost(alone: true)
         let r = Reader(url: url, host: h)
@@ -149,7 +154,8 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         return two.count > 1 && two.allSatisfy(\.isUppercase) ? two : first.uppercased() + two.dropFirst().lowercased()
     }
     // Tabs closed in this session, the latest last, for File > Reopen Closed Tab.
-    static var closed: [URL] = []
+    struct Closed { let url: URL; weak var host: ReaderHost?; let index: Int }
+    static var closed: [Closed] = []
 
     private init(url: URL, host: ReaderHost) {
         self.url = url
@@ -556,6 +562,7 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
             state = now
             folds.canCollapse = now["canCollapse"] as? Bool ?? false
             folds.canExpand = now["canExpand"] as? Bool ?? false
+            folds.shownColumns = now["shown"] as? Int ?? ReadingSettings.shared.columns
             // A reload can change how many matches there are: the find bar follows.
             if findBar.isOpen, let f = now["find"] as? [String: Any] { findBar.show(total: f["count"] as? Int ?? 0, index: f["index"] as? Int ?? 0) }
         }
@@ -654,7 +661,10 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
 
     // The tab closes (alone, or with its window).
     func teardown() {
-        if url != Reader.welcome, !AppDelegate.quitting { Reader.closed.removeAll { $0 == url }; Reader.closed.append(url) }
+        if url != Reader.welcome, !AppDelegate.quitting {
+            Reader.closed.removeAll { $0.url == url }
+            Reader.closed.append(Closed(url: url, host: host, index: host?.tabs.firstIndex { $0 === self } ?? 0))
+        }
         DispatchQueue.main.async { Reader.updateTabTitles() }
         timer?.invalidate()
         web.configuration.userContentController.removeScriptMessageHandler(forName: "menu")
@@ -956,10 +966,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let host = Reader.reader(showing: first, newWindow: true).host
         panel.urls.dropFirst().forEach { _ = Reader.reader(showing: $0, into: host) }
     }
+    // File > Reopen Closed Tab: the tab closed last, back where it was (its window and its place in the list, if the
+    // window is still open). A file that is gone since is named, not skipped.
     @objc func reopenClosedTab(_ sender: Any?) {
-        while let url = Reader.closed.popLast() {
-            if FileManager.default.fileExists(atPath: url.path) { Reader.show(url); return }
+        guard let last = Reader.closed.popLast() else { return }
+        guard FileManager.default.fileExists(atPath: last.url.path) else {
+            let alert = NSAlert()
+            alert.messageText = "“\(last.url.lastPathComponent)” can’t be reopened"
+            alert.informativeText = "It was moved or deleted after you closed it. Choose File > Open… to open it from where it is now."
+            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+            return
         }
+        if let h = last.host, ReaderHost.all.contains(where: { $0 === h }) {
+            let r = Reader.reader(showing: last.url, into: h)
+            h.adopt(r, at: last.index)
+            h.select(r)
+        } else { Reader.show(last.url) }
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
@@ -1030,6 +1052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleBoldStarts(_ sender: Any?) { ReadingSettings.shared.boldStarts.toggle() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(reopenClosedTab(_:)) { return !Reader.closed.isEmpty }
         if item.action == #selector(setColumns(_:)) { item.state = item.tag == ReadingSettings.shared.columns ? .on : .off }
         if item.action == #selector(toggleBoldStarts(_:)) { item.state = ReadingSettings.shared.boldStarts ? .on : .off }
         switch item.action {

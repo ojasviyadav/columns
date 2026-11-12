@@ -103,6 +103,7 @@ final class ReadingSettings {
 final class FoldState {
     var canCollapse = false
     var canExpand = false
+    var shownColumns = 0  // how many columns the window shows: fewer than asked for when it is too narrow for them
 }
 
 struct SettingsView: View {
@@ -120,6 +121,10 @@ struct SettingsView: View {
                         .help(n == 1 ? "1 column (⌘1)" : "\(n) columns (⌘\(n))")
                         .accessibilityLabel(n == 1 ? "1 column" : "\(n) columns")
                 }
+            }
+            if folds.shownColumns > 0 && folds.shownColumns < s.columns {
+                Text("This window shows \(folds.shownColumns) of \(s.columns), so the lines stay readable. A wider window shows them all.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             HStack(spacing: 6) {

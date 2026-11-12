@@ -800,7 +800,7 @@ const R = (() => {
       try { localStorage.setItem('pos:' + docKey, (atSaved()?.f ?? frac()).toFixed(5)); } catch {}
       window.webkit?.messageHandlers?.state?.postMessage({
         ...outlineState(), section: here?.id ?? '', canBack: trail.length > 0, canForward: ahead.length > 0,
-        find: query ? { count: hits.length, index: at + 1 } : null, selection: !getSelection().isCollapsed,
+        find: query ? { count: hits.length, index: at + 1 } : null, selection: !getSelection().isCollapsed, shown: N,
       });
     }, 120);
   }
@@ -816,7 +816,11 @@ const R = (() => {
     cancelAnimationFrame(glideId);
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {  // sideways: wide code blocks and tables
       const box = e.target.closest && e.target.closest('pre, table');
-      if (box) box.scrollLeft += e.deltaX;
+      if (box) {
+        box.scrollLeft += e.deltaX;
+        const k = arts.findIndex(a => a.contains(box)), i = k < 0 ? -1 : [...arts[k].querySelectorAll('pre, table')].indexOf(box);
+        if (i >= 0) arts.forEach(a => { const twin = a.querySelectorAll('pre, table')[i]; if (twin && twin !== box) twin.scrollLeft = box.scrollLeft; });
+      }
       return;
     }
     scrollBy(e.deltaY * (e.deltaMode === 1 ? L : e.deltaMode === 2 ? H : 1));
@@ -1139,7 +1143,7 @@ const R = (() => {
         const { b, k } = blocks(), fit = [];
         k.forEach((y, i) => { if (y === m.k) fit.push({ el: b[i], score: (sid(b[i]) === m.sec ? 2 : 0) + (k[i - 1] === m.prev ? 1 : 0) + (k[i + 1] === m.next ? 1 : 0) }); });
         const best = Math.max(-1, ...fit.map(x => x.score)), top = fit.filter(x => x.score === best);
-        return top.length === 1 ? top[0].el : fit[m.n]?.score === best ? fit[m.n].el : null;
+        return top.length === 1 ? top[0].el : null;
       };
       const p = keep && arts[0] && place?.s === s ? place : null, was = p && sign(p.el);
       // A block that a collapsed section hides, remembered for when the section opens again, is carried over too.

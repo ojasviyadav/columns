@@ -2,7 +2,7 @@
 
 Columns is a lightweight Markdown reader for ultrawide screens. It shows one document as side-by-side columns of text, so a wide screen holds several pages of it at once.
 
-To read your own file, choose **File > Open…** (⌘O), or drag a Markdown file onto this window or onto the Columns icon in the Dock. **File > Open Recent** lists the files you read before, and each one opens at the place you had reached. When you open Columns again, it shows the files that were open if your Mac keeps windows when you quit (System Settings > Desktop & Dock). To keep them once, quit with ⌥⌘Q.
+To read your own file, choose **File > Open…** (⌘O), or drag a Markdown file onto this window or onto the Columns icon in the Dock. **File > Open Recent** lists the files you read before, and each one opens at the place you had reached. When you open Columns again, it shows the files that were open if your Mac keeps windows when you quit (System Settings > Desktop & Dock). To do the other way once, hold ⌥ in the Columns menu: it shows **Quit and Keep Windows** or **Quit and Close All Windows** (⌥⌘Q).
 
 ## How the text flows
 

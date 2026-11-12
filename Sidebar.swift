@@ -599,6 +599,12 @@ final class TabRow: NSView {
         if kind == .tab, let r = reader { r.host.select(r); r.window.makeKeyAndOrderFront(nil) }
         else { onClick?() }
     }
+    // Accessibility (VoiceOver, and scripts): a row is a button or a tab that can be pressed.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityPerformPress() -> Bool {
+        if kind == .tab, let r = reader { r.host.select(r); r.window.makeKeyAndOrderFront(nil) } else { onClick?() }
+        return true
+    }
     override func otherMouseUp(with event: NSEvent) { if kind == .tab, event.buttonNumber == 2 { closeTab() } }  // a middle click closes a tab
     @objc private func closeTab() { if let r = reader { r.host.close(r) } }
 }
