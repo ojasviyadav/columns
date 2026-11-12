@@ -30,7 +30,7 @@ To keep a copy, choose **File > Export as PDF…**. The copy is in pages, with e
 
 Every file you open becomes a tab of the window in front, as in a web browser. The tabs are in the sidebar on the left, so the text keeps the whole height of the window. **New Tab** at the end of the list (⌘T) opens another file as a tab; **File > New Window…** (⌘N) opens one in a window of its own.
 
-Drag a tab up or down the sidebar to reorder it, out of the window to give it a window of its own, or onto another window's sidebar to move it there. **File > Reopen Closed Tab** (⇧⌘T) brings back the tab you closed last.
+Drag a tab up or down the sidebar to reorder it, out of the window to give it a window of its own, or onto another window's sidebar to move it there. **File > Reopen Closed Tab** (⇧⌘T) brings back the tab you closed last; after you close a window, it reads **Reopen Closed Window** and brings the window back with all its tabs.
 
 **Show icons only** at the foot of the sidebar makes it narrow, with two letters for each tab; **Show tab names** makes it wide again. The button beside the window's three dots hides the sidebar (⌃⌘S). While it is hidden, rest the pointer on that button to see the sidebar for a moment over the text, and click it to keep it. **Reading settings** (Aa) is at the foot of the sidebar too.
 
@@ -62,7 +62,7 @@ If you rename or move the file, Columns follows it. If it is deleted, Columns ke
 | Close the tab, or the whole window | ⌘W and ⇧⌘W |
 | Show or hide the sidebar | ⌃⌘S |
 | Show tab names or icons only | ⌥⌃⌘S |
-| Reopen the tab you closed last | ⇧⌘T |
+| Reopen the tab or window you closed last | ⇧⌘T |
 | Scroll one screen down or up | Space and ⇧Space |
 | Scroll a few lines | ↓ and ↑ |
 | Go to the beginning or the end | ⌘↑ and ⌘↓ |

@@ -70,6 +70,23 @@ act closeTab
 ok "Close Tab: one tab left" '[[ $(se "count windows") == 1 && $(st) != *,* ]]' "tabs: $(st)"
 act reopen
 ok "Reopen Closed Tab: it comes back and shows" '[[ $(st) == *,* && $(st) == *\** ]]' "tabs: $(st)"
+# Two files of the same name show their folders; no two tabs of a window share a tile in the icons width.
+mkdir -p $T/a $T/b; cp checks/fixtures/short.md $T/a/README.md; cp checks/fixtures/short.md $T/b/README.md; cp checks/fixtures/short.md $T/b/release.md
+open -g -a "$PWD/build/Columns Check.app" $T/a/README.md; sleep 2.5; act moveTab
+open -g -a "$PWD/build/Columns Check.app" $T/b/README.md; sleep 2.5
+open -g -a "$PWD/build/Columns Check.app" $T/b/release.md; sleep 2.5
+act tiles; tiles=$(grep '^tiles ' $T/js.log | tail -1 | cut -c7-)
+mono=$(print -r -- $tiles | tr ',' '\n' | sed 's/.*=//' | tr 'A-Z' 'a-z' | sort | uniq -d)
+ok "twin names show their folders" '[[ $tiles == *"README.md — a"* && $tiles == *"README.md — b"* ]]' "$tiles"
+ok "tiles: no two tabs of a window alike" '[[ -z $mono ]]' "$tiles"
+# A closed window comes back as a window: its tabs in order, showing the one that showed.
+act previousTab; group=$(st); group=${group%% |*}
+act closeWindow; sleep 1
+ok "Close Window: its tabs go with it" '[[ $(st) != *README* ]]' "tabs: $(st)"
+act reopen; sleep 1
+back=$(st); back=${back%% |*}
+ok "Reopen Closed Window: the same tabs, order and showing tab" '[[ $back == $group && $(se "count windows") == 2 ]]' "$group -> $back"
+act merge
 # Closing the window with all its tabs keeps Columns running.
 act closeWindow; sleep 1
 running=$(pgrep -f "Columns Check.app/Contents/MacOS" | wc -l | tr -d ' ')

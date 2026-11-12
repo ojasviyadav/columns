@@ -47,8 +47,8 @@ extension Notification.Name {
     private func tick() {
         guard state == .peeking else { watch?.invalidate(); watch = nil; return }
         let p = NSEvent.mouseLocation
-        // A popover from the sidebar (Reading settings) keeps it too.
-        let inside = shell?.peekArea.contains(p) == true || NSApp.windows.contains { $0.isVisible && $0.className.contains("Popover") }
+        // Reading settings open from this window keep it too.
+        let inside = shell?.peekArea.contains(p) == true || shell?.host?.tabs.contains { $0.settingsOpen } == true
         if inside { awaySince = nil }
         else if let since = awaySince { if Date().timeIntervalSince(since) > 0.25 { go(.hidden) } }
         else { awaySince = Date() }
@@ -140,10 +140,11 @@ extension Notification.Name {
     }
     func select(_ r: Reader) {
         guard tabs.contains(where: { $0 === r }) else { return }
+        if let old = selected, old !== r { old.focus = focusedView(in: old) }
         selected = r
         shell.show(r.pane)
         refreshTitle()
-        if window.isKeyWindow || !window.isVisible { window.makeFirstResponder(r.web) }
+        if window.isKeyWindow || !window.isVisible { restoreFocus(r) }
         changed()
         r.becameVisible()
     }
@@ -202,13 +203,23 @@ extension Notification.Name {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
-        if let s = selected { window.makeFirstResponder(s.web); s.becameVisible() }
+        if let s = selected { if focusedView(in: s) == nil { restoreFocus(s) }; s.becameVisible() }
         changed()
+    }
+    // The view in a tab that has the keyboard (a text field for its field editor), if one has.
+    private func focusedView(in r: Reader) -> NSView? {
+        var v = window.firstResponder as? NSView
+        if let t = v as? NSTextView, t.isFieldEditor { v = t.delegate as? NSView }
+        return v.flatMap { $0.isDescendant(of: r.pane) ? $0 : nil }
+    }
+    private func restoreFocus(_ r: Reader) {
+        if let f = r.focus, f.window === window, f.isDescendant(of: r.pane) { window.makeFirstResponder(f) } else { window.makeFirstResponder(r.web) }
     }
     func windowWillClose(_ notification: Notification) {
         let closing = tabs
+        Reader.rememberClosedWindow(closing, showing: selected)
         tabs = []
-        closing.forEach { $0.teardown() }
+        closing.forEach { $0.teardown(remember: false) }
         ReaderHost.all.removeAll { $0 === self }
         changed()
     }
@@ -250,7 +261,7 @@ final class ReaderPane: NSView {
 // bar with the sidebar over it for a peek (hidden and peeking).
 final class ReaderShell: NSView {
     let sidebar: TabSidebar
-    private weak var host: ReaderHost?
+    private(set) weak var host: ReaderHost?
     private var model: SidebarModel? { host?.sidebarModel }
     private(set) var page: ReaderPane?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
@@ -364,6 +375,7 @@ final class TabSidebar: NSView, NSDraggingSource {
     private let newTab = TabRow(kind: .action), settings = TabRow(kind: .action), widthSwitch = TabRow(kind: .action)
     private let insertion = NSView()
     private var shownHeight: CGFloat = -1
+    private weak var revealed: Reader?
     private let list = NSScrollView(), listDoc = FlippedView()  // the tabs and New Tab; they scroll when they do not fit
     private var dropIndex: Int?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
@@ -426,7 +438,10 @@ final class TabSidebar: NSView, NSDraggingSource {
         updateLook()
         needsLayout = true
         layoutSubtreeIfNeeded()
-        if let i = tabs.firstIndex(where: { $0 === selected }), i < rows.count { listDoc.scrollToVisible(rows[i].frame) }  // the showing tab stays in view
+        if selected !== revealed, let i = tabs.firstIndex(where: { $0 === selected }), i < rows.count {  // a newly shown tab comes into view
+            revealed = selected
+            listDoc.scrollToVisible(rows[i].frame)
+        }
     }
     func updateLook() {
         let theme = ReadingSettings.shared.theme
@@ -486,7 +501,7 @@ final class TabSidebar: NSView, NSDraggingSource {
         let drag = NSDraggingItem(pasteboardWriter: item)
         let image = NSImage(size: row.bounds.size)
         if let rep = row.bitmapImageRepForCachingDisplay(in: row.bounds) { row.cacheDisplay(in: row.bounds, to: rep); image.addRepresentation(rep) }
-        drag.setDraggingFrame(row.frame, contents: image)
+        drag.setDraggingFrame(convert(row.bounds, from: row), contents: image)
         beginDraggingSession(with: [drag], event: event, source: self)
     }
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -494,9 +509,8 @@ final class TabSidebar: NSView, NSDraggingSource {
     }
     // Dropped where no sidebar took it: the tab gets a window of its own there.
     func draggingSession(_ session: NSDraggingSession, endedAt point: NSPoint, operation: NSDragOperation) {
-        // Escape cancels the drag: the tab stays where it was.
-        if let e = NSApp.currentEvent, e.type == .keyDown, e.keyCode == 53 { return }
-        guard operation == [], let id = session.draggingPasteboard.string(forType: TabSidebar.tabType),
+        // A drag ended by Escape (or one the system cancels) ends without a mouse-up: the tab stays where it was.
+        guard NSApp.currentEvent?.type == .leftMouseUp, operation == [], let id = session.draggingPasteboard.string(forType: TabSidebar.tabType),
               let r = Reader.all.first(where: { $0.uid == id }) else { return }
         r.host.detach(r, at: NSPoint(x: point.x - 60, y: point.y + 14)).window.makeKeyAndOrderFront(nil)
     }
@@ -568,7 +582,8 @@ final class TabRow: NSView {
         wantsLayer = true
         layer?.cornerRadius = 8
         addSubview(tile)
-        for f in [name, hint] { f.lineBreakMode = .byTruncatingTail; f.isEditable = false; f.isSelectable = false; addSubview(f) }
+        name.lineBreakMode = .byTruncatingMiddle; hint.lineBreakMode = .byTruncatingTail
+        for f in [name, hint] { f.isEditable = false; f.isSelectable = false; addSubview(f) }
         name.font = .systemFont(ofSize: 13)
         hint.font = .systemFont(ofSize: 11)
         icon.symbolConfiguration = .init(pointSize: 13, weight: .regular)

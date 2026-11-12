@@ -96,7 +96,8 @@
   #cols[data-pointer="moving"] .fold { opacity: .38; }  /* while the pointer moves over the page, every heading shows it can fold */
   .md :is(h1, h2, h3, h4, h5, h6):hover > .fold, .fold:focus-visible, .fold[aria-expanded="false"] { opacity: .94; }
   .fold:hover { opacity: 1; background: color-mix(in oklab, var(--fg) 9%, transparent); }
-  .fold:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+  .fold:focus-visible, .md a:focus-visible, .md .key-focus, .md .focus-twin { outline: 2px solid var(--link); outline-offset: 1px; border-radius: 3px; }
+  .md .key-focus.fold, .md .focus-twin.fold { opacity: .94; }
   .fold[aria-expanded="false"] svg { rotate: -90deg; }
   .sec.folded > .sec-body { display: none; }
   .sec.folded > :first-child::after { content: '…'; margin-left: .45em; padding: 0 .5em; border-radius: 999px;
@@ -848,13 +849,24 @@ const R = (() => {
   }, true);
   // Tab reaches fold buttons and links in the first copy only; one that no column shows is brought into view.
   document.addEventListener('selectionchange', tell);
+  // Keyboard focus is drawn by the page itself (WebKit does not always count Tab and Option-Tab as :focus-visible):
+  // Tab sets it, a press of the mouse clears it.
+  let byKey = false;
+  addEventListener('keydown', e => { if (e.key === 'Tab') byKey = true; }, true);
+  addEventListener('mousedown', () => { byKey = false; }, true);
   addEventListener('focusin', e => {
     const el = e.target.closest?.('.fold, a');
     clips.forEach(c => { if (c.scrollTop) c.scrollTop = 0; });  // the browser's own scroll-to-focus would shift a column
-    if (!el || !arts[0]?.contains(el) || !el.matches(':focus-visible')) return;
+    root.querySelectorAll('.focus-twin, .key-focus').forEach(x => x.classList.remove('focus-twin', 'key-focus'));
+    if (!el || !arts[0]?.contains(el) || !(byKey || el.matches(':focus-visible'))) return;
+    el.classList.add('key-focus');
     const y = docY(el);
-    if (y < s || y + L > s + span()) glide(y - L, true);
+    if (y < s || y + L > s + span()) return glide(y - L, true);
+    // The first copy shows in the first column only; the column that shows this place draws the ring on its copy.
+    const k = Math.min(N - 1, Math.max(0, Math.floor((y - s) / step)));
+    if (k) { const all = [...arts[0].querySelectorAll('.fold, a')], twin = arts[k].querySelectorAll('.fold, a')[all.indexOf(el)]; twin?.classList.add('focus-twin'); }
   });
+  addEventListener('focusout', () => root.querySelectorAll('.focus-twin, .key-focus').forEach(x => x.classList.remove('focus-twin', 'key-focus')));
   // Every column holds a copy of the document, so a selection can run from one copy into the next, or over all
   // of them (Select All). Copy maps both ends to the first copy and takes the text between them once.
   function inFirst(node, offset) {

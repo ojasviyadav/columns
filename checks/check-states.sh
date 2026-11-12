@@ -53,6 +53,16 @@ link 'long#Part 7, point 2'; sleep 4
 run "const c = document.querySelector('.clip').getBoundingClientRect(), h = document.getElementById('part-7-point-2'), d = h ? Math.round(h.getBoundingClientRect().top - c.top) : null;
 return (d > 0 && d < 60 ? 'ok   ' : 'FAIL ') + 'link to another file: opens at its heading — ' + document.querySelector('.md h1').textContent + ', heading ' + d + ' px below the top';"
 
+# Keyboard focus on a link that only a later column shows: that column's copy draws the ring.
+{ echo "# Links"; for i in {1..80}; do echo; echo "Paragraph $i with a [link number $i](https://example.com/$i) in it, and some words after it to fill the line."; done; } > $T/links.md
+open_file $T/links.md
+run "R.setColumns(3, true); await new Promise(r => setTimeout(r, 500)); const arts = [...document.querySelectorAll('.md')], clips = [...document.querySelectorAll('.clip')], c1 = clips[1].getBoundingClientRect();
+const links = [...arts[0].querySelectorAll('a')], i = links.findIndex((a, j) => { const r = arts[1].querySelectorAll('a')[j].getBoundingClientRect(); return r.top > c1.top + 20 && r.bottom < c1.bottom - 20; });
+dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); links[i].focus(); await new Promise(r => setTimeout(r, 200));
+const twin = [...document.querySelectorAll('.focus-twin')];
+return (links[i].classList.contains('key-focus') && twin.length === 1 && twin[0].closest('.md') === arts[1] ? 'ok   ' : 'FAIL ') + 'keyboard focus in a later column: its copy draws the ring — link ' + (i + 1) + ', rings in copies ' + twin.map(x => arts.indexOf(x.closest('.md'))).join(',');"
+run "document.querySelectorAll('.md a')[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.activeElement.blur(); return (document.querySelectorAll('.focus-twin, .key-focus').length === 0 ? 'ok   ' : 'FAIL ') + 'focus leaves: no ring stays';"
+
 [[ -s $T/js.log ]] && { echo "script errors:"; cat $T/js.log; fail=1; }
 osascript -e 'tell application id "org.learningharness.columns.check" to quit' 2>/dev/null
 exit $fail

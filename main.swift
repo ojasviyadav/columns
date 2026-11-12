@@ -73,7 +73,11 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     let pane = ReaderPane()             // what this tab shows beside the sidebar: its bars and its page
     let uid = UUID().uuidString                 // names the tab in a drag between windows
     private(set) var tabName = "", tabTip: String?, monogram = ""  // what the sidebar shows of this tab
+    private var settingsMade = false
+    var settingsOpen: Bool { settingsMade && settings.isShown }
+    weak var focus: NSView?  // where the keyboard was when another tab came to show
     private lazy var settings: NSPopover = {
+        settingsMade = true
         let p = NSPopover()
         p.behavior = .transient
         let host = NSHostingController(rootView: SettingsView(s: ReadingSettings.shared, folds: folds) { [weak self] in self?.call("foldAll", $0) })
@@ -150,6 +154,16 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
             r.tabTip = path.map { "\(r.title)\n\($0)" } ?? r.title
             r.monogram = monogram(for: r.title)
         }
+        for h in ReaderHost.all {
+            var used = Set<String>()
+            for r in h.tabs {
+                if used.contains(r.monogram.lowercased()) {
+                    let stem = ((r.title as NSString).deletingPathExtension as String).filter { $0.isLetter || $0.isNumber }
+                    if let first = stem.first, let alt = stem.dropFirst().dropFirst().lazy.map({ first.uppercased() + String($0).lowercased() }).first(where: { !used.contains($0.lowercased()) }) { r.monogram = alt }
+                }
+                used.insert(r.monogram.lowercased())
+            }
+        }
         ReaderHost.all.forEach { $0.refreshTitle() }
         NotificationCenter.default.post(name: .tabsChanged, object: nil)
     }
@@ -160,9 +174,16 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         guard let first = two.first else { return "?" }
         return two.count > 1 && two.allSatisfy(\.isUppercase) ? two : first.uppercased() + two.dropFirst().lowercased()
     }
-    // Tabs closed in this session, the latest last, for File > Reopen Closed Tab.
-    struct Closed { let url: URL; weak var host: ReaderHost?; let index: Int }
+    // Tabs and windows closed in this session, the latest last, for File > Reopen Closed Tab (or Window). A window
+    // keeps its files in order and the one that showed.
+    struct Closed { let urls: [URL]; let showing: URL?; weak var host: ReaderHost?; let index: Int; let window: Bool }
     static var closed: [Closed] = []
+    static func rememberClosedWindow(_ tabs: [Reader], showing: Reader?) {
+        let urls = tabs.map(\.url).filter { $0 != welcome }
+        guard !urls.isEmpty, !AppDelegate.quitting else { return }
+        closed.removeAll { c in c.urls.contains(where: urls.contains) }
+        closed.append(Closed(urls: urls, showing: showing?.url, host: nil, index: 0, window: true))
+    }
 
     private init(url: URL, host: ReaderHost) {
         self.url = url
@@ -514,7 +535,7 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         ready = true
         pending.forEach { web.evaluateJavaScript($0) }
         pending = []
-        window.makeFirstResponder(web)
+        if host?.selected === self, !(window.firstResponder is NSTextView) { window.makeFirstResponder(web) }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { loadShell() }
@@ -589,6 +610,11 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
             case "sidebarWidth": h.selected?.toggleSidebarWidth(nil)
             case "sidebarToggle": h.sidebarModel.toggle()
             case "peek": h.sidebarModel.peek()
+            case "tiles":  // the front window's tabs as the sidebar names them: name=tile
+                if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
+                    let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+                    try? (old + "tiles " + h.tabs.map { "\($0.tabName)=\($0.monogram)" }.joined(separator: ",") + "\n").write(toFile: log, atomically: true, encoding: .utf8)
+                }
             case "state":  // every window's tabs and the one that shows, for the checks
                 if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
                     let order = NSApp.orderedWindows.compactMap { w in ReaderHost.all.first { $0.window === w } }
@@ -668,10 +694,10 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     @objc private func toggleSection(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { call("toggleSection", id) } }
 
     // The tab closes (alone, or with its window).
-    func teardown() {
-        if url != Reader.welcome, !AppDelegate.quitting {
-            Reader.closed.removeAll { $0.url == url }
-            Reader.closed.append(Closed(url: url, host: host, index: host?.tabs.firstIndex { $0 === self } ?? 0))
+    func teardown(remember: Bool = true) {
+        if remember, url != Reader.welcome, !AppDelegate.quitting {
+            Reader.closed.removeAll { $0.urls == [url] }
+            Reader.closed.append(Closed(urls: [url], showing: url, host: host, index: host?.tabs.firstIndex { $0 === self } ?? 0, window: false))
         }
         DispatchQueue.main.async { Reader.updateTabTitles() }
         timer?.invalidate()
@@ -916,9 +942,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             if !gone.isEmpty {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     let alert = NSAlert()
-                    let names = Array(Set(gone.map { "“\(($0 as NSString).lastPathComponent)”" })).sorted()
-                    alert.messageText = names.count == 1 ? "\(names[0]) wasn’t reopened" : "\(names.count) files weren’t reopened"
-                    alert.informativeText = "They were open when Columns quit, and have been moved or deleted since: \(names.joined(separator: ", ")). Choose File > Open… to open them from where they are now."
+                    let unique = Array(Set(gone.map { ($0 as NSString).standardizingPath })).sorted()
+                    alert.messageText = unique.count == 1 ? "“\((unique[0] as NSString).lastPathComponent)” wasn’t reopened" : "\(unique.count) files weren’t reopened"
+                    alert.informativeText = "\(AppDelegate.describe(unique)) moved or deleted since Columns quit. Choose File > Open… to open from where it is now."
                     if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
                 }
             }
@@ -981,26 +1007,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     @objc func newWindow(_ sender: Any?) {
         let panel = AppDelegate.openPanel()
-        guard panel.runModal() == .OK, let first = panel.urls.first else { return }
-        let host = Reader.reader(showing: first, newWindow: true).host
-        panel.urls.dropFirst().forEach { _ = Reader.reader(showing: $0, into: host) }
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let host = ReaderHost(alone: false)
+        panel.urls.forEach { _ = Reader.reader(showing: $0, into: host) }
+        if host.tabs.isEmpty { host.window.close() } else { host.window.makeKeyAndOrderFront(nil) }
     }
     // File > Reopen Closed Tab: the tab closed last, back where it was (its window and its place in the list, if the
     // window is still open). A file that is gone since is named, not skipped.
     @objc func reopenClosedTab(_ sender: Any?) {
-        guard let last = Reader.closed.popLast() else { return }
-        guard FileManager.default.fileExists(atPath: last.url.path) else {
+        guard let last = Reader.closed.last else { return }
+        let here = last.urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        let gone = last.urls.filter { !here.contains($0) }
+        if here.isEmpty {  // nothing to open: say which file, and offer to find it; the record stays until found or skipped
             let alert = NSAlert()
-            alert.messageText = "“\(last.url.lastPathComponent)” can’t be reopened"
-            alert.informativeText = "It was moved or deleted after you closed it. Choose File > Open… to open it from where it is now."
-            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+            alert.messageText = gone.count == 1 ? "“\(gone[0].lastPathComponent)” can’t be reopened" : "These \(gone.count) files can’t be reopened"
+            alert.informativeText = "\(AppDelegate.describe(gone.map(\.path))) moved or deleted after you closed it. Find it to open it from where it is now, or skip it."
+            alert.addButton(withTitle: "Find It…")
+            alert.addButton(withTitle: "Skip")
+            let answer = { (r: NSApplication.ModalResponse) in
+                if r == .alertSecondButtonReturn { Reader.closed.removeAll { $0.urls == last.urls }; return }
+                let panel = AppDelegate.openPanel()
+                panel.directoryURL = gone[0].deletingLastPathComponent()
+                guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+                Reader.closed.removeAll { $0.urls == last.urls }
+                if last.window { let h = ReaderHost(alone: false); panel.urls.forEach { _ = Reader.reader(showing: $0, into: h) } }
+                else { panel.urls.forEach(Reader.show) }
+            }
+            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) { answer($0) } } else { answer(alert.runModal()) }
             return
         }
-        if let h = last.host, ReaderHost.all.contains(where: { $0 === h }) {
-            let r = Reader.reader(showing: last.url, into: h)
+        Reader.closed.removeLast()
+        if last.window {  // the window comes back as it was: its files in order, showing the one that showed
+            let h = ReaderHost(alone: false)
+            here.forEach { _ = Reader.reader(showing: $0, into: h) }
+            if let s = h.tabs.first(where: { $0.url == last.showing }) ?? h.tabs.first { h.select(s) }
+            h.window.makeKeyAndOrderFront(nil)
+        } else if let h = last.host, ReaderHost.all.contains(where: { $0 === h }) {
+            let r = Reader.reader(showing: here[0], into: h)
             h.place(r, at: last.index)
             h.select(r)
-        } else { Reader.show(last.url) }
+        } else { Reader.show(here[0]) }
+        if !gone.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = gone.count == 1 ? "“\(gone[0].lastPathComponent)” wasn’t reopened" : "\(gone.count) files weren’t reopened"
+            alert.informativeText = "\(AppDelegate.describe(gone.map(\.path))) moved or deleted after the window closed. Choose File > Open… to open it from where it is now."
+            if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+        }
+    }
+    // Files named for an alert: each by its name and its folder, once.
+    static func describe(_ paths: [String]) -> String {
+        var seen = Set<String>()
+        let unique = paths.filter { seen.insert(($0 as NSString).standardizingPath).inserted }
+        let list = unique.map { p -> String in
+            let folder = ((p as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
+            return "“\((p as NSString).lastPathComponent)” in \(folder)"
+        }
+        return ListFormatter.localizedString(byJoining: list) + (list.count == 1 ? " was" : " were")
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
@@ -1071,7 +1133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleBoldStarts(_ sender: Any?) { ReadingSettings.shared.boldStarts.toggle() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(reopenClosedTab(_:)) { return !Reader.closed.isEmpty }
+        if item.action == #selector(reopenClosedTab(_:)) {
+            item.title = Reader.closed.last?.window == true ? "Reopen Closed Window" : "Reopen Closed Tab"
+            return !Reader.closed.isEmpty
+        }
         if item.action == #selector(setColumns(_:)) { item.state = item.tag == ReadingSettings.shared.columns ? .on : .off }
         if item.action == #selector(toggleBoldStarts(_:)) { item.state = ReadingSettings.shared.boldStarts ? .on : .off }
         switch item.action {
