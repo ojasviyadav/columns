@@ -137,8 +137,15 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     static func updateTabTitles() {
         let names = Dictionary(grouping: all, by: { $0.title })
         for r in all {
-            let twins = (names[r.title]?.count ?? 0) > 1 && r.url != welcome
-            r.tabName = twins ? "\(r.title) — \(r.url.deletingLastPathComponent().lastPathComponent)" : r.title
+            let twins = (names[r.title] ?? []).filter { $0.url != welcome }
+            if twins.count > 1 && r.url != welcome {
+                // The fewest folders, nearest first, that no other file of this name shares.
+                let mine = Array(r.url.deletingLastPathComponent().pathComponents.reversed())
+                let others = twins.filter { $0 !== r }.map { Array($0.url.deletingLastPathComponent().pathComponents.reversed()) }
+                var k = 1
+                while k < mine.count, others.contains(where: { Array($0.prefix(k)) == Array(mine.prefix(k)) }) { k += 1 }
+                r.tabName = "\(r.title) — \(mine.prefix(k).reversed().joined(separator: "/"))"
+            } else { r.tabName = r.title }
             let path = r.url == welcome ? nil : (r.url.path as NSString).abbreviatingWithTildeInPath
             r.tabTip = path.map { "\(r.title)\n\($0)" } ?? r.title
             r.monogram = monogram(for: r.title)
@@ -328,8 +335,8 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         if item.action == #selector(NSWindow.performClose(_:)) { item.title = tabs > 1 ? "Close Tab" : "Close" }
         switch item.action {
         case #selector(closeWindow(_:)): return true
-        case #selector(toggleSidebar(_:)): item.title = SidebarModel.shared.state == .pinned ? "Hide Sidebar" : "Show Sidebar"; return true
-        case #selector(toggleSidebarWidth(_:)): item.state = SidebarModel.shared.width == .names ? .on : .off; return true
+        case #selector(toggleSidebar(_:)): item.title = host.sidebarModel.state == .pinned ? "Hide Sidebar" : "Show Sidebar"; return true
+        case #selector(toggleSidebarWidth(_:)): item.state = host.sidebarModel.width == .names ? .on : .off; return true
         case #selector(showInFinder(_:)): return url != Reader.welcome && FileManager.default.fileExists(atPath: url.path)
         case #selector(printReader(_:)), #selector(exportPDF(_:)): return shown
         case #selector(nextSection(_:)), #selector(previousSection(_:)): return shown && !outline.isEmpty
@@ -350,7 +357,7 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         settings.animates = !byKeyboard()
         if settings.isShown { return settings.performClose(sender) }
         // From Reading settings at the foot of the sidebar; with the sidebar hidden, from the sidebar button.
-        if SidebarModel.shared.state != .hidden, let anchor = host.shell.sidebar.settingsAnchor as NSView?, anchor.window != nil {
+        if host.sidebarModel.state != .hidden, let anchor = host.shell.sidebar.settingsAnchor as NSView?, anchor.window != nil {
             settings.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX)
         } else if let button = (window as? ReaderWindow)?.sidebarButton, button.window != nil {
             settings.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -359,9 +366,9 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
         }
     }
     // View > Show Sidebar (⌃⌘S) and the sidebar button: pinned in its last width, or hidden.
-    @objc func toggleSidebar(_ sender: Any?) { SidebarModel.shared.toggle() }
+    @objc func toggleSidebar(_ sender: Any?) { host.sidebarModel.toggle() }
     @objc func toggleSidebarWidth(_ sender: Any?) {
-        let m = SidebarModel.shared
+        let m = host.sidebarModel
         m.width = m.width == .icons ? .names : .icons
         if m.state != .pinned { m.go(.pinned) }
     }
@@ -557,6 +564,7 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "menu", let context = message.body as? [String: Any] { web.context = context }
         if message.name == "link", let address = message.body as? String, let target = URL(string: address) { open(target) }
+        if !shown, message.name == "outline" || message.name == "state" { return }  // a message stands in for the file
         if message.name == "outline", let headings = message.body as? [[String: Any]] { outline = headings }
         if message.name == "state", let now = message.body as? [String: Any] {
             state = now
@@ -579,8 +587,8 @@ final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMe
             case "closeWindow": h.window.close()
             case "reopen": (NSApp.delegate as? AppDelegate)?.reopenClosedTab(nil)
             case "sidebarWidth": h.selected?.toggleSidebarWidth(nil)
-            case "sidebarToggle": SidebarModel.shared.toggle()
-            case "peek": SidebarModel.shared.peek()
+            case "sidebarToggle": h.sidebarModel.toggle()
+            case "peek": h.sidebarModel.peek()
             case "state":  // every window's tabs and the one that shows, for the checks
                 if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
                     let order = NSApp.orderedWindows.compactMap { w in ReaderHost.all.first { $0.window === w } }
@@ -691,7 +699,7 @@ final class ReaderWindow: NSWindow {
     weak var sidebarButton: NSButton?
     var host: ReaderHost? { ReaderHost.all.first { $0.window === self } }
     // A window's tabs are its own (the sidebar shows them). View > Show Tab Bar shows or hides the sidebar.
-    override func toggleTabBar(_ sender: Any?) { SidebarModel.shared.toggle() }
+    override func toggleTabBar(_ sender: Any?) { host?.sidebarModel.toggle() }
     override func selectNextTab(_ sender: Any?) { host?.step(1) }
     override func selectPreviousTab(_ sender: Any?) { host?.step(-1) }
     override func moveTabToNewWindow(_ sender: Any?) { if let h = host, let r = h.selected { h.detach(r) } }
@@ -727,7 +735,8 @@ final class ReaderWindow: NSWindow {
         let bars = titlebarAccessoryViewControllers.map(\.view)  // the find bar and the file banner are not the title bar
         var hit = frameView.hitTest(frameView.convert(p, from: nil))
         while let v = hit {  // a control, the find bar, the banner or the tab bar keeps its own double-click
-            if v is NSControl || bars.contains(v) || String(describing: type(of: v)).contains("Tab") { return false }
+            let label = (v as? NSTextField).map { !$0.isEditable && !$0.isSelectable } ?? false  // the window's title is part of the bar
+            if (v is NSControl && !label) || bars.contains(v) || String(describing: type(of: v)).contains("Tab") { return false }
             hit = v.superview
         }
         return true
@@ -903,6 +912,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             // Dock, "Close windows when quitting an application" off, or ⌥⌘Q). A first launch shows what the app does;
             // with nothing to reopen, the Open panel, as in TextEdit and Preview.
             let exists = { (p: String) in FileManager.default.fileExists(atPath: p) }
+            let gone = (Prefs.openGroups.flatMap { $0["files"] as? [String] ?? [] } + Prefs.openFiles.map(\.path)).filter { !exists($0) }
+            if !gone.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    let alert = NSAlert()
+                    let names = Array(Set(gone.map { "“\(($0 as NSString).lastPathComponent)”" })).sorted()
+                    alert.messageText = names.count == 1 ? "\(names[0]) wasn’t reopened" : "\(names.count) files weren’t reopened"
+                    alert.informativeText = "They were open when Columns quit, and have been moved or deleted since: \(names.joined(separator: ", ")). Choose File > Open… to open them from where they are now."
+                    if let w = ReaderHost.key?.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+                }
+            }
             let groups = Prefs.openGroups.map { ($0["files"] as? [String] ?? []).filter(exists) }.filter { !$0.isEmpty }
             let open = Prefs.openFiles.filter { exists($0.path) }
             if !groups.isEmpty {
@@ -979,7 +998,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         if let h = last.host, ReaderHost.all.contains(where: { $0 === h }) {
             let r = Reader.reader(showing: last.url, into: h)
-            h.adopt(r, at: last.index)
+            h.place(r, at: last.index)
             h.select(r)
         } else { Reader.show(last.url) }
     }

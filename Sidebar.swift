@@ -7,10 +7,10 @@ extension Notification.Name {
     static let tabsChanged = Notification.Name("ColumnsTabsChanged")        // a tab opened, closed, moved, renamed or chosen
 }
 
-// The sidebar's state, one for every window: hidden, peeking (shown over the page while the pointer rests on the
-// sidebar button or on the sidebar), or pinned (beside the page); and its width when shown: icons or names.
+// A window's sidebar: hidden, peeking (shown over the page while the pointer rests on the sidebar button or on the
+// sidebar), or pinned (beside the page); and its width when shown: icons or names. Each window has its own; a new
+// window starts as the last one was set.
 @MainActor final class SidebarModel {
-    static let shared = SidebarModel()
     enum State { case hidden, peeking, pinned }
     enum Width: String { case icons, names }
     static let iconsWidth: CGFloat = 104, namesWidth: CGFloat = 240
@@ -18,7 +18,7 @@ extension Notification.Name {
     private(set) var state: State
     var width: Width { didSet { d.set(width.rawValue, forKey: "sidebarWidth"); changed() } }
     var points: CGFloat { width == .icons ? Self.iconsWidth : Self.namesWidth }
-    private init() {
+    init() {
         state = d.string(forKey: "sidebar") == "hidden" ? .hidden : .pinned
         width = Width(rawValue: d.string(forKey: "sidebarWidth") ?? "") ?? .names
     }
@@ -30,7 +30,8 @@ extension Notification.Name {
     }
     // The sidebar button, or View > Show Sidebar: pinned in its last width, or hidden.
     func toggle() { go(state == .pinned ? .hidden : .pinned) }
-    private func changed() { NotificationCenter.default.post(name: .sidebarChanged, object: nil) }
+    private func changed() { NotificationCenter.default.post(name: .sidebarChanged, object: self) }
+    weak var shell: ReaderShell?
 
     // A peek lasts while the pointer is on the sidebar button or on the sidebar; a moment after it leaves both, the
     // sidebar hides again. A click on the button meanwhile pins it.
@@ -41,12 +42,13 @@ extension Notification.Name {
         go(.peeking)
         awaySince = nil
         watch?.invalidate()
-        watch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in MainActor.assumeIsolated { SidebarModel.shared.tick() } }
+        watch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
     }
     private func tick() {
         guard state == .peeking else { watch?.invalidate(); watch = nil; return }
         let p = NSEvent.mouseLocation
-        let inside = NSApp.windows.contains { $0.isVisible && ($0.contentView as? ReaderShell)?.peekArea.contains(p) == true }
+        // A popover from the sidebar (Reading settings) keeps it too.
+        let inside = shell?.peekArea.contains(p) == true || NSApp.windows.contains { $0.isVisible && $0.className.contains("Popover") }
         if inside { awaySince = nil }
         else if let since = awaySince { if Date().timeIntervalSince(since) > 0.25 { go(.hidden) } }
         else { awaySince = Date() }
@@ -56,10 +58,22 @@ extension Notification.Name {
 // A window and its tabs. Each tab is a Reader with its own page (and its find bar and file banner); the window shows
 // the chosen one beside the sidebar. Tabs move between windows (dragged, or by the Window menu); a window goes with
 // its last tab.
-@MainActor final class ReaderHost: NSObject, NSWindowDelegate {
+@MainActor final class ReaderHost: NSObject, NSWindowDelegate, NSMenuItemValidation {
     static var all: [ReaderHost] = []
+    // The window's delegate is in the menus' path, so a command for a document (Find, Print, Back, Settings, the
+    // sidebar button…) reaches the tab that shows, and asks it whether it can be done.
+    // AppKit asks these on the main thread only.
+    nonisolated override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || MainActor.assumeIsolated { selected?.responds(to: aSelector) == true }
+    }
+    nonisolated override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if !super.responds(to: aSelector), let s = MainActor.assumeIsolated({ selected }), s.responds(to: aSelector) { return s }
+        return super.forwardingTarget(for: aSelector)
+    }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool { selected?.validateMenuItem(item) ?? false }
     let window: ReaderWindow
     private(set) var shell: ReaderShell!
+    let sidebarModel = SidebarModel()
     private(set) var tabs: [Reader] = []
     private(set) weak var selected: Reader?
     static var key: ReaderHost? { all.first { $0.window.isKeyWindow } ?? all.first { $0.window.isMainWindow } }
@@ -79,6 +93,7 @@ extension Notification.Name {
         window.titleVisibility = .hidden          // the sidebar names the tabs; the page takes the full height beside it
         window.delegate = self
         shell = ReaderShell(host: self)
+        sidebarModel.shell = shell
         window.contentView = shell
         let button = SidebarButton.make()
         window.addTitlebarAccessoryViewController(button)
@@ -109,7 +124,8 @@ extension Notification.Name {
     }
     // The window's title (for the Window menu, Mission Control and the Dock) is the tab that shows.
     func refreshTitle() {
-        window.title = selected?.title ?? "Columns"
+        window.titleVisibility = sidebarModel.state == .pinned ? .hidden : .visible  // hidden sidebar: the strip names the file
+        window.title = selected?.tabName.isEmpty == false ? selected!.tabName : selected?.title ?? "Columns"
         window.representedURL = selected.flatMap { $0.url == Reader.welcome ? nil : $0.url }
     }
     private func changed() { NotificationCenter.default.post(name: .tabsChanged, object: nil) }
@@ -173,8 +189,16 @@ extension Notification.Name {
     }
     // Window > Merge All Windows: every tab into this window.
     static func mergeAll(into h: ReaderHost) {
+        let reading = h.selected
         for other in all where other !== h { for r in other.tabs { h.adopt(r, at: h.tabs.count) } }
-        if let s = h.selected { h.select(s) }
+        if let s = reading ?? h.selected { h.select(s) }
+    }
+    // A tab to a place in the list (an index of the list as it ends up, not of the gap between two tabs).
+    func place(_ r: Reader, at index: Int) {
+        guard let i = tabs.firstIndex(where: { $0 === r }) else { return }
+        tabs.remove(at: i)
+        tabs.insert(r, at: max(0, min(index, tabs.count)))
+        NotificationCenter.default.post(name: .tabsChanged, object: nil)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -226,16 +250,19 @@ final class ReaderPane: NSView {
 // bar with the sidebar over it for a peek (hidden and peeking).
 final class ReaderShell: NSView {
     let sidebar: TabSidebar
+    private weak var host: ReaderHost?
+    private var model: SidebarModel? { host?.sidebarModel }
     private(set) var page: ReaderPane?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
     private var layoutWatch: NSKeyValueObservation?
     static let titleBar: CGFloat = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled]).height - 100
 
     init(host: ReaderHost) {
+        self.host = host
         sidebar = TabSidebar(host: host)
         super.init(frame: .zero)
         addSubview(sidebar)
-        observers.append(NotificationCenter.default.addObserver(forName: .sidebarChanged, object: nil, queue: .main) { [weak self] _ in
+        observers.append(NotificationCenter.default.addObserver(forName: .sidebarChanged, object: host.sidebarModel, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.sidebarChanged() }
         })
     }
@@ -258,7 +285,7 @@ final class ReaderShell: NSView {
     var titleInset: CGFloat { window.map { max(ReaderShell.titleBar, bounds.height - $0.contentLayoutRect.height) } ?? ReaderShell.titleBar }
     // Where a peek stays open, in screen coordinates: the sidebar and the sidebar button.
     var peekArea: NSRect {
-        guard let window, SidebarModel.shared.state == .peeking else { return .zero }
+        guard let window, model?.state == .peeking else { return .zero }
         var r = window.convertToScreen(convert(sidebar.frame, to: nil))
         if let button = (window as? ReaderWindow)?.sidebarButton, button.window != nil {
             r = r.union(window.convertToScreen(button.convert(button.bounds, to: nil)))
@@ -266,7 +293,8 @@ final class ReaderShell: NSView {
         return r.insetBy(dx: -4, dy: -4)
     }
     private func sidebarChanged() {
-        let peek = SidebarModel.shared.state == .peeking
+        let peek = model?.state == .peeking
+        host?.refreshTitle()
         if peek && sidebar.isHidden {  // it slides in over the page
             layoutNow()
             let end = sidebar.frame
@@ -281,7 +309,8 @@ final class ReaderShell: NSView {
     private func layoutNow() { needsLayout = true; layoutSubtreeIfNeeded() }
     override func layout() {
         super.layout()
-        let m = SidebarModel.shared, w = m.points, top = titleInset, bars = top - ReaderShell.titleBar
+        guard let m = model else { return }
+        let w = m.points, top = titleInset, bars = top - ReaderShell.titleBar
         sidebar.overlay = m.state == .peeking
         switch m.state {
         case .pinned:
@@ -308,7 +337,7 @@ final class SidebarButton: NSButton {
         area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self)
         addTrackingArea(area!)
     }
-    override func mouseEntered(with event: NSEvent) { SidebarModel.shared.peek() }
+    override func mouseEntered(with event: NSEvent) { (window as? ReaderWindow)?.host?.sidebarModel.peek() }
     static func make() -> NSTitlebarAccessoryViewController {
         let b = SidebarButton(image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Sidebar")!, target: nil, action: #selector(Reader.toggleSidebar(_:)))
         b.isBordered = false
@@ -334,6 +363,8 @@ final class TabSidebar: NSView, NSDraggingSource {
     private var rows: [TabRow] = []
     private let newTab = TabRow(kind: .action), settings = TabRow(kind: .action), widthSwitch = TabRow(kind: .action)
     private let insertion = NSView()
+    private var shownHeight: CGFloat = -1
+    private let list = NSScrollView(), listDoc = FlippedView()  // the tabs and New Tab; they scroll when they do not fit
     private var dropIndex: Int?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
     static let tabType = NSPasteboard.PasteboardType("org.learningharness.columns.tab")
@@ -345,13 +376,28 @@ final class TabSidebar: NSView, NSDraggingSource {
         wantsLayer = true
         insertion.wantsLayer = true
         insertion.isHidden = true
-        [newTab, settings, widthSwitch, insertion].forEach(addSubview)
+        list.drawsBackground = false
+        list.hasVerticalScroller = true
+        list.autohidesScrollers = true
+        list.scrollerStyle = .overlay
+        list.contentView.drawsBackground = false
+        list.documentView = listDoc
+        addSubview(list)
+        [newTab, insertion].forEach(listDoc.addSubview)
+        [settings, widthSwitch].forEach(addSubview)
         newTab.onClick = { [weak self] in self?.host?.selected?.newWindowForTab(nil) }
-        settings.onClick = { [weak self] in self?.host?.selected?.showSettings(nil) }
-        widthSwitch.onClick = { let m = SidebarModel.shared; m.width = m.width == .icons ? .names : .icons }
+        settings.onClick = { [weak self] in
+            guard let h = self?.host else { return }
+            if h.sidebarModel.state == .peeking { h.sidebarModel.go(.pinned) }  // settings from a peek: the sidebar stays
+            h.selected?.showSettings(nil)
+        }
+        widthSwitch.onClick = { [weak self] in
+            guard let m = self?.host?.sidebarModel else { return }
+            m.width = m.width == .icons ? .names : .icons
+        }
         registerForDraggedTypes([TabSidebar.tabType, .fileURL])
-        for name in [Notification.Name.tabsChanged, .sidebarChanged] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        for (name, object) in [(Notification.Name.tabsChanged, nil), (.sidebarChanged, host.sidebarModel as AnyObject?)] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.reload() }
             })
         }
@@ -362,12 +408,12 @@ final class TabSidebar: NSView, NSDraggingSource {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { true }  // its empty part moves the window, as a title bar does
 
-    private var names: Bool { SidebarModel.shared.width == .names }
+    private var names: Bool { host?.sidebarModel.width != .icons }
     // The readers of this window's tabs, in their order.
     var tabs: [Reader] { host?.tabs ?? [] }
     func reload() {
         let list = tabs, selected = host?.selected
-        while rows.count < list.count { let r = TabRow(kind: .tab); rows.append(r); addSubview(r, positioned: .below, relativeTo: insertion) }
+        while rows.count < list.count { let r = TabRow(kind: .tab); rows.append(r); listDoc.addSubview(r, positioned: .below, relativeTo: insertion) }
         while rows.count > list.count { rows.removeLast().removeFromSuperview() }
         for (row, r) in zip(rows, list) {
             row.reader = r
@@ -375,11 +421,12 @@ final class TabSidebar: NSView, NSDraggingSource {
         }
         newTab.configureAction(symbol: "plus", title: "New Tab", shortcut: "⌘T", names: names, tip: "Open a file in a new tab (⌘T)")
         settings.configureAction(symbol: nil, title: "Reading settings", shortcut: "⌘,", names: names, tip: "Reading settings: columns, text size, theme and font (⌘,)")
-        widthSwitch.configureAction(symbol: names ? "sidebar.squares.left" : "sidebar.left", title: "Show icons only", shortcut: nil, names: names,
-                                    tip: names ? "Show icons only" : "Show tab names")
-        if !names { widthSwitch.toolTip = "Show tab names" }
+        widthSwitch.configureAction(symbol: names ? "sidebar.squares.left" : "sidebar.left", title: names ? "Show icons only" : "Show tab names",
+                                    shortcut: nil, names: names, tip: names ? "Show icons only (⌥⌃⌘S)" : "Show tab names (⌥⌃⌘S)")
         updateLook()
         needsLayout = true
+        layoutSubtreeIfNeeded()
+        if let i = tabs.firstIndex(where: { $0 === selected }), i < rows.count { listDoc.scrollToVisible(rows[i].frame) }  // the showing tab stays in view
     }
     func updateLook() {
         let theme = ReadingSettings.shared.theme
@@ -404,17 +451,23 @@ final class TabSidebar: NSView, NSDraggingSource {
     }
 
     static let rowHeight: CGFloat = 34, tileHeight: CGFloat = 40, gap: CGFloat = 4
-    private func rowFrame(_ i: Int) -> NSRect {
-        let top = max(44, topInset + 10), h = names ? TabSidebar.rowHeight : TabSidebar.tileHeight
-        return NSRect(x: 10, y: top + CGFloat(i) * (h + TabSidebar.gap), width: bounds.width - 20, height: h)
+    private func rowFrame(_ i: Int) -> NSRect {  // in the list
+        let h = names ? TabSidebar.rowHeight : TabSidebar.tileHeight
+        return NSRect(x: 10, y: 4 + CGFloat(i) * (h + TabSidebar.gap), width: bounds.width - 20, height: h)
     }
     override func layout() {
         super.layout()
-        for (i, row) in rows.enumerated() { row.frame = rowFrame(i) }
-        newTab.frame = rowFrame(rows.count)
-        let h = names ? TabSidebar.rowHeight : TabSidebar.tileHeight
+        let h = names ? TabSidebar.rowHeight : TabSidebar.tileHeight, top = max(40, topInset + 6)
         widthSwitch.frame = NSRect(x: 10, y: bounds.height - 10 - h, width: bounds.width - 20, height: h)
         settings.frame = NSRect(x: 10, y: widthSwitch.frame.minY - TabSidebar.gap - h, width: bounds.width - 20, height: h)
+        list.frame = NSRect(x: 0, y: top, width: bounds.width, height: max(0, settings.frame.minY - 8 - top))
+        for (i, row) in rows.enumerated() { row.frame = rowFrame(i) }
+        newTab.frame = rowFrame(rows.count)
+        listDoc.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(list.contentSize.height, newTab.frame.maxY + 4))
+        if list.frame.height != shownHeight {  // a resized list keeps the showing tab in view
+            shownHeight = list.frame.height
+            if let i = tabs.firstIndex(where: { $0 === host?.selected }), i < rows.count { listDoc.scrollToVisible(rows[i].frame) }
+        }
         if let i = dropIndex {
             let y = i < rows.count ? rowFrame(i).minY - TabSidebar.gap / 2 : rowFrame(rows.count).minY - TabSidebar.gap / 2
             insertion.frame = NSRect(x: 12, y: y - 1, width: bounds.width - 24, height: 2)
@@ -441,19 +494,21 @@ final class TabSidebar: NSView, NSDraggingSource {
     }
     // Dropped where no sidebar took it: the tab gets a window of its own there.
     func draggingSession(_ session: NSDraggingSession, endedAt point: NSPoint, operation: NSDragOperation) {
+        // Escape cancels the drag: the tab stays where it was.
+        if let e = NSApp.currentEvent, e.type == .keyDown, e.keyCode == 53 { return }
         guard operation == [], let id = session.draggingPasteboard.string(forType: TabSidebar.tabType),
               let r = Reader.all.first(where: { $0.uid == id }) else { return }
         r.host.detach(r, at: NSPoint(x: point.x - 60, y: point.y + 14)).window.makeKeyAndOrderFront(nil)
     }
-    private func index(at p: NSPoint) -> Int {
+    private func index(at windowPoint: NSPoint) -> Int {
+        let p = listDoc.convert(windowPoint, from: nil)
         for i in 0..<rows.count where p.y < rowFrame(i).midY { return i }
         return rows.count
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let p = convert(sender.draggingLocation, from: nil)
         if sender.draggingPasteboard.string(forType: TabSidebar.tabType) != nil {
-            dropIndex = index(at: p); insertion.isHidden = false; needsLayout = true
+            dropIndex = index(at: sender.draggingLocation); insertion.isHidden = false; needsLayout = true
             return .move
         }
         return ReaderWebView.textFiles(sender).isEmpty ? [] : .copy
@@ -471,6 +526,8 @@ final class TabSidebar: NSView, NSDraggingSource {
         return !files.isEmpty
     }
 }
+
+final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
 // A rounded tile with one or two letters in its middle (a tab's letters, or Aa).
 final class Tile: NSView {

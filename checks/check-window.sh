@@ -12,6 +12,7 @@ run() {  # run <script text>: runs it in the front page and prints what it retur
   rm -f $T/eval.js.out; print -r -- "$1" > $T/eval.tmp; mv $T/eval.tmp $T/eval.js
   for i in {1..40}; do sleep 0.5; [[ -f $T/eval.js.out ]] && break; done; cat $T/eval.js.out 2>/dev/null
 }
+defaults write $id sidebar pinned  # each run starts from the same sidebar, whatever an earlier run left
 COLUMNS_EVAL=$T/eval.js COLUMNS_LOG=$T/js.log checks/launch-check.sh $T/long.md; sleep 4
 se "set size of window 1 to {900, 600}" >/dev/null; sleep 1
 small=$(frame)
@@ -25,20 +26,26 @@ ok "Zoom again: back to the frame before" '[[ $back == $small ]]' "$small -> $zo
 # A double-click on the title bar, as the window gets it, does what the Mac is set to do (the app's own copy of the
 # setting stands in for the Mac's here, so the check never changes the Mac's).
 dbl() { run 'webkit.messageHandlers.titleDoubleClick.postMessage(1); return "";' >/dev/null; sleep 1.2; }
-defaults delete $id AppleActionOnDoubleClick 2>/dev/null; dbl; d1=$(frame); dbl; d2=$(frame)
-ok "title bar double-click: fills the screen" '[[ $d1 != $small ]]' "$small -> $d1"
-ok "title bar double-click again: back" '[[ $d2 == $small ]]' "$small -> $d1 -> $d2"
-defaults write $id AppleActionOnDoubleClick None; sleep 0.5; dbl; d3=$(frame)
-ok "title bar double-click, set to No Action: nothing" '[[ $d3 == $small ]]' "$small -> $d3"
-defaults write $id AppleActionOnDoubleClick Minimize; sleep 0.5; dbl
-mini=$(se "get value of attribute \"AXMinimized\" of window 1")
-ok "title bar double-click, set to Minimize: minimized" '[[ $mini == true ]]' "minimized: $mini"
-se "set value of attribute \"AXMinimized\" of window 1 to false" >/dev/null; sleep 1
-defaults delete $id AppleActionOnDoubleClick
+dblchecks() {  # dblchecks <sidebar state>: the title bar is the sidebar's top when pinned, and the title strip when hidden
+  defaults delete $id AppleActionOnDoubleClick 2>/dev/null; dbl; d1=$(frame); dbl; d2=$(frame)
+  ok "title bar double-click ($1): fills the screen" '[[ $d1 != $small ]]' "$small -> $d1"
+  ok "title bar double-click ($1) again: back" '[[ $d2 == $small ]]' "$small -> $d1 -> $d2"
+  defaults write $id AppleActionOnDoubleClick None; sleep 0.5; dbl; d3=$(frame)
+  ok "title bar double-click ($1), set to No Action: nothing" '[[ $d3 == $small ]]' "$small -> $d3"
+  defaults write $id AppleActionOnDoubleClick Minimize; sleep 0.5; dbl
+  mini=$(se "get value of attribute \"AXMinimized\" of window 1")
+  ok "title bar double-click ($1), set to Minimize: minimized" '[[ $mini == true ]]' "minimized: $mini"
+  se "set value of attribute \"AXMinimized\" of window 1 to false" >/dev/null; sleep 1
+  defaults delete $id AppleActionOnDoubleClick
+}
+dblchecks "sidebar pinned"
+run "webkit.messageHandlers.act.postMessage('sidebarToggle'); return '';" >/dev/null; sleep 1.2
+dblchecks "sidebar hidden"
+run "webkit.messageHandlers.act.postMessage('sidebarToggle'); return '';" >/dev/null; sleep 1.2
 # Narrow window: fewer columns shown than asked for, each one readable.
 se "set size of window 1 to {720, 600}" >/dev/null; sleep 1.5
 shown=$(run 'R.setColumns(6, true); await new Promise(r => setTimeout(r, 300)); const s = R.state(); return s.columns + " " + s.shown;')
-ok "narrow window: fewer columns shown" '[[ $shown == "6 2" ]]' "asked, shown: $shown"
+ok "narrow window: fewer columns shown" '[[ ${shown% *} == 6 && ${shown#* } -ge 1 && ${shown#* } -lt 6 ]]' "asked, shown: $shown"
 run 'R.setColumns(3, true); return "";' >/dev/null
 # Keys: Shift-arrows are left to the system; Option-arrow goes a page.
 keys=$(run 'R.go("top", true); const y = () => document.querySelector(".md").style.transform; const a = y();

@@ -835,6 +835,17 @@ const R = (() => {
     e.preventDefault(); glide(d === Infinity ? endS() : s + d, true);
   });
   addEventListener('resize', refit);
+  // A wide table or code block scrolled sideways (by its scroll bar too) scrolls the same in every column.
+  let syncing = false;
+  addEventListener('scroll', e => {
+    const box = e.target;
+    if (syncing || !(box instanceof Element) || !box.matches('pre, table')) return;
+    const k = arts.findIndex(a => a.contains(box)), i = k < 0 ? -1 : [...arts[k].querySelectorAll('pre, table')].indexOf(box);
+    if (i < 0) return;
+    syncing = true;
+    arts.forEach(a => { const twin = a.querySelectorAll('pre, table')[i]; if (twin && twin !== box && twin.scrollLeft !== box.scrollLeft) twin.scrollLeft = box.scrollLeft; });
+    syncing = false;
+  }, true);
   // Tab reaches fold buttons and links in the first copy only; one that no column shows is brought into view.
   document.addEventListener('selectionchange', tell);
   addEventListener('focusin', e => {

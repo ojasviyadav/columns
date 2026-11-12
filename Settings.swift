@@ -42,7 +42,8 @@ enum Theme: String, CaseIterable, Identifiable {
     // Text colours, also from index.html; the swatches show a sample of the text in each theme.
     var ink: NSColor {
         switch self {
-        case .system, .light: NSColor(srgbRed: 0.114, green: 0.114, blue: 0.122, alpha: 1)
+        case .system: NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? Theme.dark.ink : Theme.light.ink }
+        case .light: NSColor(srgbRed: 0.114, green: 0.114, blue: 0.122, alpha: 1)
         case .sepia: NSColor(srgbRed: 0.231, green: 0.184, blue: 0.133, alpha: 1)
         case .dark: NSColor(srgbRed: 0.894, green: 0.894, blue: 0.902, alpha: 1)
         }
