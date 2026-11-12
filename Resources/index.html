@@ -502,7 +502,14 @@ const R = (() => {
       const left = first ? xL - W / 2 : g[k - 1] + W / 2 + GAP;
       const right = last ? xR + W / 2 : g[k + 1] - W / 2 - GAP;
       const x = g[k] - W / 2;
-      svg += `<g><g class="lane">${first ? edgeL() : ''}${rect(left, bottom - O, x + W - left, O)}${rect(x, top, W, bottom - top)}${rect(x, top, right - x, O)}${last ? edgeR() : ''}</g></g>`;
+      // A band in a middle column fades out by the middle of the column, with its dots (see drawDots).
+      const fade = (id, from, to) => `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${from}" y1="0" x2="${to}" y2="0"><stop offset="0" stop-color="currentColor"/><stop offset=".3" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient>`;
+      const midOf = i => (c[i].left + c[i].right) / 2 - r.left;
+      if (!first) svg += `<defs>${fade('band-b-' + k, g[k], midOf(k))}</defs>`;
+      if (!last) svg += `<defs>${fade('band-t-' + k, g[k], midOf(k + 1))}</defs>`;
+      const bottomBand = rect(left, bottom - O, x + W - left, O, first ? '' : ` fill="url(#band-b-${k})"`);
+      const topBand = rect(x, top, right - x, O, last ? '' : ` fill="url(#band-t-${k})"`);
+      svg += `<g><g class="lane">${first ? edgeL() : ''}${bottomBand}${rect(x, top, W, bottom - top)}${topBand}${last ? edgeR() : ''}</g></g>`;
       // The dot path runs the way the text runs back when you scroll down: from the far end of column k's bottom
       // band (or from the top of the left edge), to the gutter, up it, to the far end of column k+1's top band (or
       // down the right edge). Scrolling down moves the dots toward its start: up the edges, down the gutters.
