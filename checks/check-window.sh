@@ -12,7 +12,7 @@ run() {  # run <script text>: runs it in the front page and prints what it retur
   rm -f $T/eval.js.out; print -r -- "$1" > $T/eval.tmp; mv $T/eval.tmp $T/eval.js
   for i in {1..40}; do sleep 0.5; [[ -f $T/eval.js.out ]] && break; done; cat $T/eval.js.out 2>/dev/null
 }
-COLUMNS_EVAL=$T/eval.js checks/launch-check.sh $T/long.md; sleep 4
+COLUMNS_EVAL=$T/eval.js COLUMNS_LOG=$T/js.log checks/launch-check.sh $T/long.md; sleep 4
 se "set size of window 1 to {900, 600}" >/dev/null; sleep 1
 small=$(frame)
 # Zoom as a title bar double-click does it (performZoom), without bringing Columns to the front.
@@ -45,25 +45,24 @@ keys=$(run 'R.go("top", true); const y = () => document.querySelector(".md").sty
 dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true })); const b = y();
 dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })); const c = y(); return [a === b, b !== c].join(" ");')
 ok "keys: Shift-arrow left to the system, Option-arrow pages" '[[ $keys == "true true" ]]' "$keys"
-# A second file opens as a tab of the window in front, which stays where it is; the tab bar shows.
+# A second file opens as a tab of the window in front, which stays where it is. The tabs are in the sidebar; `st`
+# reads them from the app: windows front to back, separated by |, each with its tabs, the showing one marked *.
 before=$(frame)
 open -g -a "$PWD/build/Columns Check.app" $T/short.md; sleep 3
-tabs() { se 'get title of radio buttons of (first UI element of window 1 whose role is "AXTabGroup")' | sed 's/.*error.*/(no tab bar)/'; }
-ok "a second file opens as a tab" '[[ $(se "count windows") == 1 && $(tabs) == "long.md, short.md" ]]' "$(se 'count windows') windows, tabs: $(tabs)"
-ok "the window stays where it was" '[[ $(frame) == $before ]]' "$before -> $(frame)"
 act() { run "webkit.messageHandlers.act.postMessage('$1'); return '';" >/dev/null; sleep 1.2; }
+st() { act state; grep '^state ' $T/js.log | tail -1 | cut -c7-; }
+ok "a second file opens as a tab" '[[ $(se "count windows") == 1 && $(st) == "long.md,*short.md" ]]' "$(se 'count windows') windows, tabs: $(st)"
+ok "the window stays where it was" '[[ $(frame) == $before ]]' "$before -> $(frame)"
 act moveTab
-ok "Move Tab to New Window: two windows, each with its tab bar" '[[ $(se "count windows") == 2 && $(tabs) == "short.md" ]]' "$(se 'count windows') windows, front tabs: $(tabs)"
+ok "Move Tab to New Window: two windows" '[[ $(se "count windows") == 2 && $(st) == "*short.md | *long.md" ]]' "$(se 'count windows') windows, tabs: $(st)"
 act merge
-set_tabs() { tabs | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' '; }
-ok "Merge All Windows: one window, both tabs" '[[ $(se "count windows") == 1 && $(set_tabs) == "long.md short.md " ]]' "$(se 'count windows') windows, tabs: $(tabs)"
-selected() { se 'get title of (first radio button of (first UI element of window 1 whose role is "AXTabGroup") whose value is 1)'; }
-shown=$(selected); act previousTab
-ok "Show Previous Tab: the other tab shows" '[[ $(selected) != $shown ]]' "$shown -> $(selected)"
-shown=$(selected); act closeTab
-ok "Close Tab: the tab that showed is closed" '[[ $(se "count windows") == 1 && $(tabs) != *$shown* && $(tabs) != "(no tab bar)" ]]' "closed $shown, tabs: $(tabs)"
+ok "Merge All Windows: one window, both tabs" '[[ $(se "count windows") == 1 && $(st) == "short.md,*long.md" || $(st) == "*short.md,long.md" ]]' "$(se 'count windows') windows, tabs: $(st)"
+shown=$(st); act previousTab
+ok "Show Previous Tab: the other tab shows" '[[ $(st) != $shown ]]' "$shown -> $(st)"
+act closeTab
+ok "Close Tab: one tab left" '[[ $(se "count windows") == 1 && $(st) != *,* ]]' "tabs: $(st)"
 act reopen
-ok "Reopen Closed Tab: it comes back" '[[ $(set_tabs) == "long.md short.md " && $(selected) == $shown ]]' "tabs: $(tabs), showing: $(selected)"
+ok "Reopen Closed Tab: it comes back and shows" '[[ $(st) == *,* && $(st) == *\** ]]' "tabs: $(st)"
 # Closing the window with all its tabs keeps Columns running.
 act closeWindow; sleep 1
 running=$(pgrep -f "Columns Check.app/Contents/MacOS" | wc -l | tr -d ' ')

@@ -24,6 +24,21 @@ enum Theme: String, CaseIterable, Identifiable {
         case .dark: NSColor(srgbRed: 0.110, green: 0.110, blue: 0.118, alpha: 1)
         }
     }
+    // The link colour of each theme (index.html): the sidebar marks the tab that shows in it.
+    var link: NSColor {
+        switch self {
+        case .system: NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? Theme.dark.link : Theme.light.link }
+        case .light: NSColor(srgbRed: 0.039, green: 0.392, blue: 0.847, alpha: 1)
+        case .sepia: NSColor(srgbRed: 0.561, green: 0.310, blue: 0.071, alpha: 1)
+        case .dark: NSColor(srgbRed: 0.353, green: 0.663, blue: 1, alpha: 1)
+        }
+    }
+    // The sidebar: the page, a shade towards the text.
+    var rail: NSColor { NSColor(name: nil) { a in
+        var c = NSColor.clear
+        a.performAsCurrentDrawingAppearance { c = self.page.blended(withFraction: 0.045, of: self.ink) ?? self.page }
+        return c
+    } }
     // Text colours, also from index.html; the swatches show a sample of the text in each theme.
     var ink: NSColor {
         switch self {

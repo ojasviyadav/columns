@@ -58,16 +58,21 @@ enum Prefs {
 }
 
 @MainActor
-final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarDelegate, WKScriptMessageHandler, NSMenuItemValidation {
+final class Reader: NSObject, WKNavigationDelegate, WKScriptMessageHandler, NSMenuItemValidation {
     static var all: [Reader] = []
     // The window the menus act on: the key one, or the main one while a panel or the popover is key.
-    static var current: Reader? { all.first { $0.window.isKeyWindow } ?? all.first { $0.window.isMainWindow } ?? all.last }
-    private static let settingsItem = NSToolbarItem.Identifier("settings")
+    static var current: Reader? {
+        ReaderHost.all.first { $0.window.isKeyWindow }?.selected ?? ReaderHost.all.first { $0.window.isMainWindow }?.selected ?? all.last
+    }
 
     private(set) var url: URL
-    let window: NSWindow
+    weak var host: ReaderHost!           // the window this tab is in (it can move to another)
+    var window: NSWindow { host.window }
+    private(set) var title = ""         // the file's name, or Welcome to Columns
     let web = ReaderWebView()
-    private var settingsButton: NSButton?
+    let pane = ReaderPane()             // what this tab shows beside the sidebar: its bars and its page
+    let uid = UUID().uuidString                 // names the tab in a drag between windows
+    private(set) var tabName = "", tabTip: String?, monogram = ""  // what the sidebar shows of this tab
     private lazy var settings: NSPopover = {
         let p = NSPopover()
         p.behavior = .transient
@@ -94,7 +99,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     private var showing = Showing.nothing { didSet { if showing.banner != oldValue.banner { showBanner() } } }
     private var problem: String? { showing.banner }  // what the banner says while the file cannot be shown
     private var shown: Bool { showing.hasText }      // the page holds the file's text (an old version stays while there is a problem)
-    private var banner: NSTitlebarAccessoryViewController?
+    private var banner: NSView?
     private var printJob: PrintJob?
     private lazy var findBar = FindBar(reader: self)
     var outline: [[String: Any]] = []    // the headings, for Go > Go to Section
@@ -105,86 +110,58 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     static let welcome = Bundle.main.url(forResource: "Welcome to Columns", withExtension: "md")
 
     static func show(_ url: URL) { _ = reader(showing: url) }
-    // Files open as tabs, as in a browser: in the window in front (`into` names another one), or in a window of their
-    // own with `newWindow`. A file that is open already comes to the front where it is.
-    static func reader(showing url: URL, into host: NSWindow? = nil, newWindow: Bool = false) -> Reader {
+    static func reader(showing url: URL, into host: ReaderHost? = nil, newWindow: Bool = false) -> Reader {
         let same = { (a: URL) in a.resolvingSymlinksInPath().standardizedFileURL == url.resolvingSymlinksInPath().standardizedFileURL }
-        if let r = all.first(where: { same($0.url) }) { r.window.makeKeyAndOrderFront(nil); return r }
-        let front = newWindow ? nil : host ?? frontWindow
-        let r = Reader(url: url, alone: front == nil)
+        if let r = all.first(where: { same($0.url) }) { r.host.select(r); r.window.makeKeyAndOrderFront(nil); return r }
+        let target = newWindow ? nil : host ?? ReaderHost.front
+        let h = target ?? ReaderHost(alone: true)
+        let r = Reader(url: url, host: h)
         all.append(r)
-        if let front { front.addTabbedWindow(r.window, ordered: .above) }
-        r.window.makeKeyAndOrderFront(nil)
-        (r.window as? ReaderWindow)?.keepTabBar()
+        h.insert(r)
+        h.window.makeKeyAndOrderFront(nil)
         updateTabTitles()
         guard url != welcome else { return r }
         Prefs.lastFile = url
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         return r
     }
+    // Files open as tabs, as in a browser: in the window in front (`into` names another one), or in a window of their
+    // own with `newWindow`. A file that is open already comes to the front where it is.
 
-    // The reader window a new tab joins: the one in front, if it can show one now.
-    static var frontWindow: NSWindow? {
-        let readers = Set(all.map { ObjectIdentifier($0.window) })
-        return NSApp.orderedWindows.first { readers.contains(ObjectIdentifier($0)) && $0.isVisible && !$0.isMiniaturized }
-    }
     // A tab shows its file's name; two files of the same name also show their folders, and the tooltip the whole path.
     static func updateTabTitles() {
-        let names = Dictionary(grouping: all, by: { $0.window.title })
+        let names = Dictionary(grouping: all, by: { $0.title })
         for r in all {
-            let twins = (names[r.window.title]?.count ?? 0) > 1 && r.url != welcome
-            r.window.tab.title = twins ? "\(r.window.title) — \(r.url.deletingLastPathComponent().lastPathComponent)" : r.window.title
-            r.window.tab.toolTip = r.url == welcome ? nil : (r.url.path as NSString).abbreviatingWithTildeInPath
+            let twins = (names[r.title]?.count ?? 0) > 1 && r.url != welcome
+            r.tabName = twins ? "\(r.title) — \(r.url.deletingLastPathComponent().lastPathComponent)" : r.title
+            let path = r.url == welcome ? nil : (r.url.path as NSString).abbreviatingWithTildeInPath
+            r.tabTip = path.map { "\(r.title)\n\($0)" } ?? r.title
+            r.monogram = monogram(for: r.title)
         }
+        ReaderHost.all.forEach { $0.refreshTitle() }
+        NotificationCenter.default.post(name: .tabsChanged, object: nil)
+    }
+    // Two letters for a tab in the narrow sidebar: README → RE, IDEA → ID, ownership → Ow.
+    static func monogram(for title: String) -> String {
+        let stem = ((title as NSString).deletingPathExtension as String).filter { $0.isLetter || $0.isNumber }
+        let two = String(stem.prefix(2))
+        guard let first = two.first else { return "?" }
+        return two.count > 1 && two.allSatisfy(\.isUppercase) ? two : first.uppercased() + two.dropFirst().lowercased()
     }
     // Tabs closed in this session, the latest last, for File > Reopen Closed Tab.
     static var closed: [URL] = []
 
-    private init(url: URL, alone: Bool = true) {
+    private init(url: URL, host: ReaderHost) {
         self.url = url
-        window = ReaderWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        self.host = host
         super.init()
-        window.isReleasedWhenClosed = false
-        if url == Reader.welcome {
-            window.title = "Welcome to Columns"
-        } else {
-            window.title = url.lastPathComponent
-            window.representedURL = url
-            bookmark = try? url.bookmarkData()
-        }
-        window.contentMinSize = NSSize(width: 480, height: 360)
-        window.tabbingIdentifier = "Columns"  // every reader can be a tab of any other; drag a tab out for a window of its own
-        window.tabbingMode = .preferred
-        window.titlebarAppearsTransparent = true  // the title bar takes the page's colour, so sepia is sepia to the top
-        window.contentView = web
-        window.delegate = self
-        // The first window owns the saved frame; each further one opens at the same size, stepped down and right of the
-        // front one (which stays where it is). A first window ever fills most of the screen, centred, so that Zoom (a
-        // double-click on the title bar, the green button with ⌥) has a larger frame to go to and a smaller one to return to.
-        let saved = UserDefaults.standard.object(forKey: "NSWindow Frame Reader") != nil
-        if !alone {
-            // a tab takes the size of its window
-        } else if window.setFrameAutosaveName("Reader") {
-            if !saved, let area = NSScreen.main?.visibleFrame {
-                let size = NSSize(width: (area.width * 0.85).rounded(), height: (area.height * 0.88).rounded())
-                window.setFrame(NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height), display: false)
-            }
-        } else if let front = Reader.current?.window {
-            let next = front.frame.offsetBy(dx: 24, dy: -24)
-            window.setFrame(window.constrainFrameRect(next, to: front.screen), display: false)
-        }
-        #if CHECK_COPY  // the check copy only (CHECK_COPY=1 ./build.sh): open at COLUMNS_FRAME, e.g. on a display for checks
-        if let frame = ProcessInfo.processInfo.environment["COLUMNS_FRAME"] { window.setFrame(NSRectFromString(frame), display: false) }
-        if let pdf = ProcessInfo.processInfo.environment["COLUMNS_EXPORT"] {  // and save the file as PDF there once it shows
+        if url == Reader.welcome { title = "Welcome to Columns" } else { title = url.lastPathComponent; bookmark = try? url.bookmarkData() }
+        pane.web = web
+        #if CHECK_COPY
+        if let pdf = ProcessInfo.processInfo.environment["COLUMNS_EXPORT"] {  // the check copy saves the file as PDF there once it shows
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.printCopy(to: URL(fileURLWithPath: pdf)) }
         }
         #endif
-        let toolbar = NSToolbar(identifier: "reader")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unifiedCompact
         web.navigationDelegate = self
         web.reader = self
         web.configuration.userContentController.add(self, name: "menu")
@@ -225,9 +202,9 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 
     func applyTheme() {
         let theme = ReadingSettings.shared.theme
-        window.appearance = theme.appearance
-        window.backgroundColor = theme.page
+        host?.applyTheme()
         web.underPageBackgroundColor = theme.page
+        pane.applyTheme()
         // The popover is open while the theme changes, so it follows at once instead of keeping the old look.
         settings.appearance = theme.appearance  // nil: it follows the system, also when the system changes
         settings.contentViewController?.view.appearance = theme.appearance
@@ -239,11 +216,11 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         let panel = AppDelegate.openPanel()
         panel.beginSheetModal(for: window) { [weak self] answer in
             guard answer == .OK else { return }
-            MainActor.assumeIsolated { panel.urls.forEach { _ = Reader.reader(showing: $0, into: self?.window) } }
+            MainActor.assumeIsolated { panel.urls.forEach { _ = Reader.reader(showing: $0, into: self?.host) } }
         }
     }
     // File > Close Window: every tab of this window.
-    @objc func closeWindow(_ sender: Any?) { (window.tabbedWindows ?? [window]).forEach { $0.performClose(sender) } }
+    @objc func closeWindow(_ sender: Any?) { window.close() }
 
     @objc func showInFinder(_ sender: Any?) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
 
@@ -279,7 +256,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     }
     private func open(_ bar: FindBar) {
         adoptSharedFind()
-        if !bar.isOpen { window.addTitlebarAccessoryViewController(bar) }
+        if !bar.isOpen { pane.find = bar.view }
         window.makeFirstResponder(bar.field)
         if !bar.field.stringValue.isEmpty { bar.search(0) }
     }
@@ -341,10 +318,12 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        let tabs = window.tabbedWindows?.count ?? 1
+        let tabs = host.tabs.count
         if item.action == #selector(NSWindow.performClose(_:)) { item.title = tabs > 1 ? "Close Tab" : "Close" }
         switch item.action {
-        case #selector(closeWindow(_:)): return tabs > 1
+        case #selector(closeWindow(_:)): return true
+        case #selector(toggleSidebar(_:)): item.title = SidebarModel.shared.state == .pinned ? "Hide Sidebar" : "Show Sidebar"; return true
+        case #selector(toggleSidebarWidth(_:)): item.state = SidebarModel.shared.width == .names ? .on : .off; return true
         case #selector(showInFinder(_:)): return url != Reader.welcome && FileManager.default.fileExists(atPath: url.path)
         case #selector(printReader(_:)), #selector(exportPDF(_:)): return shown
         case #selector(nextSection(_:)), #selector(previousSection(_:)): return shown && !outline.isEmpty
@@ -364,29 +343,23 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     @objc func showSettings(_ sender: Any?) {
         settings.animates = !byKeyboard()
         if settings.isShown { return settings.performClose(sender) }
-        if let button = settingsButton, button.window != nil {
+        // From Reading settings at the foot of the sidebar; with the sidebar hidden, from the sidebar button.
+        if SidebarModel.shared.state != .hidden, let anchor = host.shell.sidebar.settingsAnchor as NSView?, anchor.window != nil {
+            settings.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX)
+        } else if let button = (window as? ReaderWindow)?.sidebarButton, button.window != nil {
             settings.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        } else {  // toolbar hidden: hang it from the top-right corner of the page
-            settings.show(relativeTo: NSRect(x: web.bounds.maxX - 40, y: web.bounds.maxY - 1, width: 1, height: 1), of: web, preferredEdge: .minY)
+        } else {
+            settings.show(relativeTo: NSRect(x: 40, y: web.bounds.maxY - 1, width: 1, height: 1), of: web, preferredEdge: .minY)
         }
     }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Reader.settingsItem] }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Reader.settingsItem] }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard id == Reader.settingsItem else { return nil }
-        // A real button, so the popover can hang from it.
-        let image = NSImage(systemSymbolName: "textformat.size", accessibilityDescription: "Reading settings")!
-        let button = NSButton(image: image, target: self, action: #selector(showSettings(_:)))
-        button.bezelStyle = .toolbar
-        button.toolTip = "Settings: columns, text size, theme and font (⌘,)"
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.view = button
-        item.label = "Settings"
-        settingsButton = button
-        return item
+    // View > Show Sidebar (⌃⌘S) and the sidebar button: pinned in its last width, or hidden.
+    @objc func toggleSidebar(_ sender: Any?) { SidebarModel.shared.toggle() }
+    @objc func toggleSidebarWidth(_ sender: Any?) {
+        let m = SidebarModel.shared
+        m.width = m.width == .icons ? .names : .icons
+        if m.state != .pinned { m.go(.pinned) }
     }
+
 
     func reload(keep: Bool = true) {
         stamp = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -437,8 +410,8 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 
     // A banner under the title bar while the file cannot be shown, with what to do about it.
     private func showBanner() {
-        banner?.removeFromParent()
         banner = nil
+        pane.banner = nil
         guard let text = problem else { return }
         let icon = NSImageView(image: NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Problem")!)
         icon.contentTintColor = .systemOrange
@@ -453,11 +426,8 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         bar.addView(choose, in: .trailing)
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 12)
         bar.frame = NSRect(x: 0, y: 0, width: 600, height: 36)
-        let vc = NSTitlebarAccessoryViewController()
-        vc.layoutAttribute = .bottom
-        vc.view = bar
-        window.addTitlebarAccessoryViewController(vc)
-        banner = vc
+        banner = bar
+        pane.banner = bar
     }
 
     // Open File… from the banner: opens the chosen file in place of this one.
@@ -471,7 +441,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
             guard answer == .OK, let chosen = panel.url else { return }
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if Reader.all.contains(where: { $0.url == chosen }) { Reader.show(chosen); self.window.close() } else { self.adopt(chosen, moved: false) }
+                if Reader.all.contains(where: { $0.url == chosen }) { Reader.show(chosen); self.host.close(self) } else { self.adopt(chosen, moved: false) }
             }
         }
     }
@@ -481,12 +451,12 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     private func adopt(_ file: URL, moved: Bool) {
         let wasLast = Prefs.lastFile?.path == url.path
         url = file
-        window.title = file.lastPathComponent
-        window.representedURL = file
+        title = file.lastPathComponent
         bookmark = try? file.bookmarkData()
         if wasLast || !moved { Prefs.lastFile = file }
         NSDocumentController.shared.noteNewRecentDocumentURL(file)
         reload(keep: moved)
+        Reader.updateTabTitles()
     }
 
     // Where a renamed or moved file went; a file in the Trash counts as deleted.
@@ -500,7 +470,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     }
 
     // Editors often save by replacing the file, so compare attributes instead of watching one file handle.
-    @objc private func poll() {
+    @objc func poll() {
         #if CHECK_COPY
         if self === Reader.current, let path = ProcessInfo.processInfo.environment["COLUMNS_EVAL"],
            let js = try? String(contentsOfFile: path, encoding: .utf8) {
@@ -592,15 +562,25 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         #if CHECK_COPY
         if message.name == "zoom" { window.performZoom(nil) }
         if message.name == "act", let name = message.body as? String {
-            let window = self.window.tabGroup?.selectedWindow ?? self.window  // the tab showing in this window
+            let h = ReaderHost.key ?? host!
             switch name {
-            case "moveTab": window.moveTabToNewWindow(nil)
-            case "merge": window.mergeAllWindows(nil)
-            case "previousTab": window.selectPreviousTab(nil)
-            case "nextTab": window.selectNextTab(nil)
-            case "closeTab": window.performClose(nil)
-            case "closeWindow": (window.tabbedWindows ?? [window]).forEach { $0.performClose(nil) }
+            case "moveTab": h.detach(h.selected ?? self)
+            case "merge": ReaderHost.mergeAll(into: h)
+            case "previousTab": h.step(-1)
+            case "nextTab": h.step(1)
+            case "closeTab": if let s = h.selected { h.close(s) }
+            case "closeWindow": h.window.close()
             case "reopen": (NSApp.delegate as? AppDelegate)?.reopenClosedTab(nil)
+            case "sidebarWidth": h.selected?.toggleSidebarWidth(nil)
+            case "sidebarToggle": SidebarModel.shared.toggle()
+            case "peek": SidebarModel.shared.peek()
+            case "state":  // every window's tabs and the one that shows, for the checks
+                if let log = ProcessInfo.processInfo.environment["COLUMNS_LOG"] {
+                    let order = NSApp.orderedWindows.compactMap { w in ReaderHost.all.first { $0.window === w } }
+                    let line = order.map { g in g.tabs.map { ($0 === g.selected ? "*" : "") + $0.title }.joined(separator: ",") }.joined(separator: " | ")
+                    let old = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+                    try? (old + "state " + line + "\n").write(toFile: log, atomically: true, encoding: .utf8)
+                }
             default: break
             }
         }
@@ -672,12 +652,8 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
     }
     @objc private func toggleSection(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { call("toggleSection", id) } }
 
-    func windowDidBecomeKey(_ notification: Notification) {
-        (window as? ReaderWindow)?.keepTabBar()  // a tab dragged out is a window of its own now: it keeps a tab bar too
-        poll()
-    }
-
-    func windowWillClose(_ notification: Notification) {
+    // The tab closes (alone, or with its window).
+    func teardown() {
         if url != Reader.welcome, !AppDelegate.quitting { Reader.closed.removeAll { $0 == url }; Reader.closed.append(url) }
         DispatchQueue.main.async { Reader.updateTabTitles() }
         timer?.invalidate()
@@ -693,6 +669,7 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
         #endif
         Reader.all.removeAll { $0 === self }
     }
+    func becameVisible() { poll() }
 }
 
 // A reader's window. A double-click on its title bar does what the Mac is set to do (System Settings > Desktop & Dock,
@@ -701,37 +678,32 @@ final class Reader: NSObject, NSWindowDelegate, WKNavigationDelegate, NSToolbarD
 // macOS 27, 11 Nov 2026; a plain window in the same app zooms), so the window answers it itself. A double-click on a
 // control in the bar (the window buttons, Settings) stays the control's.
 final class ReaderWindow: NSWindow {
-    // The tab bar shows even with one tab, as in Chrome, so a tab can always be dropped into any window, and the + is
-    // always there. View > Hide Tab Bar turns it off for every window, and Show Tab Bar back on.
-    static var showsTabBar: Bool {
-        get { UserDefaults.standard.object(forKey: "showsTabBar") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "showsTabBar") }
+    weak var sidebarButton: NSButton?
+    var host: ReaderHost? { ReaderHost.all.first { $0.window === self } }
+    // A window's tabs are its own (the sidebar shows them). View > Show Tab Bar shows or hides the sidebar.
+    override func toggleTabBar(_ sender: Any?) { SidebarModel.shared.toggle() }
+    override func selectNextTab(_ sender: Any?) { host?.step(1) }
+    override func selectPreviousTab(_ sender: Any?) { host?.step(-1) }
+    override func moveTabToNewWindow(_ sender: Any?) { if let h = host, let r = h.selected { h.detach(r) } }
+    override func mergeAllWindows(_ sender: Any?) { if let h = host { ReaderHost.mergeAll(into: h) } }
+    // ⌘W closes the tab that shows; the window goes with its last tab.
+    override func performClose(_ sender: Any?) {
+        if let h = host, h.tabs.count > 1, let r = h.selected { h.close(r) } else { super.performClose(sender) }
     }
-    override func toggleTabBar(_ sender: Any?) {
-        super.toggleTabBar(sender)
-        guard sender != nil else { return }
-        ReaderWindow.showsTabBar = tabGroup?.isTabBarVisible ?? true
-        for w in NSApp.windows { (w as? ReaderWindow)?.keepTabBar() }
-    }
-    func keepTabBar() {
-        if let group = tabGroup, group.isTabBarVisible != ReaderWindow.showsTabBar { super.toggleTabBar(nil) }
-    }
-    // The next and previous tab, wrapping round, also when Columns is not the active app (AppKit's own does nothing then).
-    override func selectNextTab(_ sender: Any?) { step(1) }
-    override func selectPreviousTab(_ sender: Any?) { step(-1) }
-    private func step(_ by: Int) {
-        guard let group = tabGroup, group.windows.count > 1, let now = group.selectedWindow, let i = group.windows.firstIndex(of: now) else { return }
-        let next = group.windows[(i + by + group.windows.count) % group.windows.count]
-        group.selectedWindow = next
-        next.makeKeyAndOrderFront(nil)
-    }
-    // A tab that leaves for a window of its own (menu, or dragged out) gets its tab bar there too.
-    override func moveTabToNewWindow(_ sender: Any?) {
-        super.moveTabToNewWindow(sender)
-        DispatchQueue.main.async { [weak self] in self?.keepTabBar() }
+    override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let tabs = host?.tabs.count ?? 1
+        switch item.action {
+        case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)), #selector(moveTabToNewWindow(_:)): return tabs > 1
+        case #selector(mergeAllWindows(_:)): return ReaderHost.all.count > 1
+        default: return super.validateMenuItem(item)
+        }
     }
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .leftMouseDown, event.clickCount == 2, inTitleBar(event.locationInWindow) else { return super.sendEvent(event) }
+        titleDoubleClick()
+    }
+    // What a double-click on the title bar (or on the empty part of the sidebar) does, as the Mac is set.
+    func titleDoubleClick() {
         let d = UserDefaults.standard
         switch d.string(forKey: "AppleActionOnDoubleClick") {
         case "None": break
@@ -761,16 +733,16 @@ final class ReaderWebView: WKWebView {
     private static let kept: Set<String> = ["Copy", "LookUp", "Translate", "SearchWeb", "ShareMenu", "SpeechMenu", "CopyLink", "CopyImage"]
 
     // A Markdown or text file dropped on the page opens in Columns, like one dropped on the Dock icon.
-    private func textFiles(_ drag: NSDraggingInfo) -> [URL] {
+    static func textFiles(_ drag: NSDraggingInfo) -> [URL] {
         let urls = drag.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         return urls.filter { UTType(filenameExtension: $0.pathExtension)?.conforms(to: .text) == true || ["md", "markdown"].contains($0.pathExtension.lowercased()) }
     }
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { textFiles(sender).isEmpty ? super.draggingEntered(sender) : .copy }
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { textFiles(sender).isEmpty ? super.draggingUpdated(sender) : .copy }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { ReaderWebView.textFiles(sender).isEmpty ? super.draggingEntered(sender) : .copy }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { ReaderWebView.textFiles(sender).isEmpty ? super.draggingUpdated(sender) : .copy }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let files = textFiles(sender)
+        let files = ReaderWebView.textFiles(sender)
         guard !files.isEmpty else { return super.performDragOperation(sender) }
-        files.forEach(Reader.show)
+        files.forEach { _ = Reader.reader(showing: $0, into: reader?.host) }
         return true
     }
 
@@ -790,7 +762,7 @@ final class ReaderWebView: WKWebView {
 @MainActor
 final class FindBar: NSTitlebarAccessoryViewController, NSSearchFieldDelegate {
     weak var reader: Reader?
-    var isOpen: Bool { parent != nil }  // the bar is open while it sits under the title bar
+    var isOpen: Bool { view.superview != nil }  // the bar is open while it sits above its tab's page
     let field = NSSearchField()
     private let count = NSTextField(labelWithString: "")
     private let arrows = NSSegmentedControl(images: [NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Previous match")!,
@@ -843,7 +815,7 @@ final class FindBar: NSTitlebarAccessoryViewController, NSSearchFieldDelegate {
         count.stringValue = field.stringValue.isEmpty ? "" : total == 0 ? "Not found" : index == 0 ? "\(total) found" : "\(index) of \(total)"
         arrows.isEnabled = total > 0
     }
-    @objc func close() { removeFromParent(); reader?.endFind() }
+    @objc func close() { reader?.pane.find = nil; reader?.endFind() }
 }
 
 // Prints (or saves as PDF) a clean copy of a document from a web view of its own, so the reader's columns stay as they are.
@@ -903,6 +875,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                                                                  reason: "Reload open Markdown files when they change")
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // macOS keeps its own "show the tab bar" choice per kind of tab; the sidebar shows the tabs, so it stays off.
+        NSWindow.allowsAutomaticWindowTabbing = false  // a window's tabs are its own, in its sidebar
         NSApp.mainMenu = makeMenu()
         // Libron for the settings popover; the page loads its own copy with @font-face.
         let fonts = Bundle.main.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? []
@@ -923,10 +897,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let open = Prefs.openFiles.filter { exists($0.path) }
             if !groups.isEmpty {
                 for (g, files) in zip(Prefs.openGroups.filter { !(($0["files"] as? [String] ?? []).filter(exists)).isEmpty }, groups) {
-                    let host = Reader.reader(showing: URL(fileURLWithPath: files[0]), newWindow: true).window
+                    let host = Reader.reader(showing: URL(fileURLWithPath: files[0]), newWindow: true).host!
                     files.dropFirst().forEach { _ = Reader.reader(showing: URL(fileURLWithPath: $0), into: host) }
-                    let selected = min(g["selected"] as? Int ?? 0, files.count - 1)
-                    Reader.all.first { $0.url.path == files[selected] }?.window.makeKeyAndOrderFront(nil)
+                    // The tab that showed, by its file (an index would shift when an earlier file is gone).
+                    let selected = g["selected"] as? String ?? files[min(g["selected"] as? Int ?? 0, files.count - 1)]
+                    if let r = host.tabs.first(where: { $0.url.path == selected }) ?? host.tabs.first { host.select(r) }
                 }
             } else if !open.isEmpty { open.forEach(Reader.show) }
             else if !Prefs.launchedBefore, let welcome = Reader.welcome { Reader.show(welcome) }
@@ -954,12 +929,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let keep = AppDelegate.keepsWindows != invertKeep
         var seen = Set<ObjectIdentifier>(), groups: [[String: Any]] = []
         for w in NSApp.orderedWindows.reversed() where !seen.contains(ObjectIdentifier(w)) {
-            let tabs = w.tabbedWindows ?? [w]
-            tabs.forEach { seen.insert(ObjectIdentifier($0)) }
-            let readers = tabs.compactMap { t in Reader.all.first { $0.window === t } }.filter { $0.url != Reader.welcome }
+            seen.insert(ObjectIdentifier(w))
+            guard let h = ReaderHost.all.first(where: { $0.window === w }) else { continue }
+            let readers = h.tabs.filter { $0.url != Reader.welcome }
             guard !readers.isEmpty else { continue }
-            let selected = readers.firstIndex { $0.window === (w.tabGroup?.selectedWindow ?? w) } ?? 0
-            groups.append(["files": readers.map(\.url.path), "selected": selected])
+            groups.append(["files": readers.map(\.url.path), "selected": h.selected.map(\.url.path) ?? readers[0].url.path])
         }
         Prefs.openGroups = keep ? groups : []
         Prefs.openFiles = keep ? groups.flatMap { ($0["files"] as? [String] ?? []).map { URL(fileURLWithPath: $0) } } : []
@@ -979,7 +953,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func newWindow(_ sender: Any?) {
         let panel = AppDelegate.openPanel()
         guard panel.runModal() == .OK, let first = panel.urls.first else { return }
-        let host = Reader.reader(showing: first, newWindow: true).window
+        let host = Reader.reader(showing: first, newWindow: true).host
         panel.urls.dropFirst().forEach { _ = Reader.reader(showing: $0, into: host) }
     }
     @objc func reopenClosedTab(_ sender: Any?) {
@@ -1163,6 +1137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                          item("Collapse All Sections", #selector(Reader.collapseAll(_:)), arrow(NSLeftArrowFunctionKey), [.command, .option, .shift]),
                          item("Expand All Sections", #selector(Reader.expandAll(_:)), arrow(NSRightArrowFunctionKey), [.command, .option, .shift]),
                          .separator(),
+                         item("Show Sidebar", #selector(Reader.toggleSidebar(_:)), "s", [.command, .control]),
+                         item("Show Tab Names", #selector(Reader.toggleSidebarWidth(_:)), "s", [.command, .control, .option]), .separator(),
                          item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])]),
          go, window, help].forEach(main.addItem)
         return main

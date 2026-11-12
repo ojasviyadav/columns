@@ -15,7 +15,7 @@ flags=(); [[ "${CHECK_COPY:-0}" == "1" ]] && flags=(-D CHECK_COPY)  # the hooks 
 # One app for Apple silicon and Intel Macs: each is compiled on its own, then the two are joined.
 tmp=$(mktemp -d)
 for arch in arm64 x86_64; do
-  swiftc -O -swift-version 6 -target $arch-apple-macos14.2 "${flags[@]}" main.swift Settings.swift -o "$tmp/Columns-$arch"
+  swiftc -O -swift-version 6 -target $arch-apple-macos14.2 "${flags[@]}" main.swift Settings.swift Sidebar.swift -o "$tmp/Columns-$arch"
 done
 lipo -create "$tmp/Columns-arm64" "$tmp/Columns-x86_64" -output "$app/Contents/MacOS/Columns"
 rm -rf "$tmp"
